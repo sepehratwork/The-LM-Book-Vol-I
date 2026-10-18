@@ -1,0 +1,1 @@
+I'm writing a book about fundamental and foundations of language models.

@@ -1,0 +1,68 @@
+├── bibliography.bib
+├── chapters
+│   ├── 01_introduction
+│   │   └── 01_introduction.tex
+│   ├── 02_architecture
+│   │   ├── 01_tokenizer.tex
+│   │   ├── 02_positional_encoding.tex
+│   │   ├── 03_feed_forward.tex
+│   │   ├── 04_activation_function.tex
+│   │   ├── 05_normalization.tex
+│   │   └── 06_attention.tex
+│   ├── 03_optimization
+│   │   ├── 01_algorithm.tex
+│   │   ├── 02_loss_function.tex
+│   │   ├── 03_quantization.tex
+│   │   ├── 04_distillation.tex
+│   │   └── 05_peft.tex
+│   ├── 04_scaling_law
+│   │   └── 01_scaling_law.tex
+│   ├── 05_reinforcement_learning
+│   │   ├── 01_theory.tex
+│   │   ├── 02_actor_critics.tex
+│   │   ├── 03_rlvr.tex
+│   │   └── 04_rlvr_grpo.tex
+│   ├── 06_neuroscience
+│   │   ├── 01_introduction.tex
+│   │   └── 02_from_system1_to_system2.tex
+│   ├── 07_training_data
+│   │   ├── 01_pre_train.tex
+│   │   └── 02_post_train.tex
+│   ├── 08_training_method
+│   │   ├── 01_pre_train.tex
+│   │   ├── 02_post_train.tex
+│   │   └── 03_unlearning.tex
+│   ├── 09_evaluation
+│   │   └── 01_benchmarks.tex
+│   ├── 10_environmental_impacts
+│   │   └── 01_environmental_impacts.tex
+│   └── 11_philosophy
+│       └── 01_philosophy.tex
+├── images
+│   ├── angle1.png
+│   ├── angle2.png
+│   ├── background.jpg
+│   ├── cover.jpg
+│   ├── idea.pdf
+│   ├── LineEqnA.jpg
+│   ├── LineEqnA.pdf
+│   ├── PD88x31.png
+│   ├── ThreePlanes2a.png
+│   ├── ThreePlanes2b.png
+│   ├── ThreePlanes.png
+│   ├── twolinesonesol.png
+│   ├── TwoLines.png
+│   ├── TwoPlanes.png
+│   ├── wolframalpha.png
+│   └── Yayoi_Kusama_Infinity_Room.jpg
+├── Makefile
+├── prompts.txt
+├── structure.txt
+├── tstextbook.cls
+├── tstextbook.idx
+├── tstextbook.maf
+├── tstextbook.mtc
+├── tstextbook.mtc0
+├── tstextbook.pdf
+├── tstextbook_se.cls
+└── tstextbook.tex
