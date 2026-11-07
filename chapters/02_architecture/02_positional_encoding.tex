@@ -1,0 +1,863 @@
+% ============================================================================
+% 02_architecture/02_positional_encoding.tex
+% Section body for inclusion immediately after the corresponding \section
+% command in the master book file. Follows section_body_template.tex.
+% No document-level commands or package imports are included.
+% ============================================================================
+
+% ----------------------------------------------------------------------------
+% Opening transition and conceptual motivation
+% ----------------------------------------------------------------------------
+
+Once tokenization has converted an input text into a sequence of discrete
+tokens, the Transformer must construct numerical representations that retain
+the information needed for subsequent computation. Token embeddings represent
+the identities and learned content of the tokens, but a sequence is not
+defined by token identity alone. The order in which tokens occur, and the
+distances separating them, are also essential to linguistic structure. The
+next architectural question is therefore how a Transformer can represent
+sequence position and make that information available to its attention
+mechanism.
+
+This requirement follows from the computational organization of the
+Transformer. Unlike recurrent architectures, which propagate information
+through an explicitly ordered sequence of state updates, self-attention
+computes interactions among token representations through query, key, and
+value projections. This design enables parallel processing and direct
+interactions between distant tokens, but the attention operation does not,
+by itself, provide a complete representation of the positions occupied by
+those tokens. Positional encoding supplies this missing structural
+information. The distinction between token content and token position, and
+the way in which they are combined, consequently form part of the mathematical
+definition of a Transformer layer.
+
+% ----------------------------------------------------------------------------
+% Main exposition
+% ----------------------------------------------------------------------------
+
+\subsection{Why Self-Attention Requires Positional Information}
+\label{subsec:pe-positional-necessity}
+
+Let an input sequence contain \(L\) tokens, and let the embedding of the
+token at position \(i\) be \(\mathbf{x}_i\in\mathbb{R}^{d_{\mathrm{model}}}\).
+Collecting the embeddings as rows gives
+
+\begin{equation}
+    X =
+    \begin{bmatrix}
+        \mathbf{x}_1^{\mathsf T}\\
+        \mathbf{x}_2^{\mathsf T}\\
+        \vdots\\
+        \mathbf{x}_L^{\mathsf T}
+    \end{bmatrix}
+    \in\mathbb{R}^{L\times d_{\mathrm{model}}}.
+    \label{eq:pe-input-matrix}
+\end{equation}
+
+For one attention head, the query, key, and value matrices are obtained
+through learned linear projections,
+
+\begin{equation}
+    Q=XW_Q,\qquad
+    K=XW_K,\qquad
+    V=XW_V,
+    \label{eq:pe-qkv-projections}
+\end{equation}
+
+where \(W_Q,W_K\in\mathbb{R}^{d_{\mathrm{model}}\times d_k}\) and
+\(W_V\in\mathbb{R}^{d_{\mathrm{model}}\times d_v}\). The query and key
+dimension is \(d_k\), and the value dimension is \(d_v\). The scaled
+dot-product attention scores and attention weights are
+
+\begin{equation}
+    S=\frac{QK^{\mathsf T}}{\sqrt{d_k}},
+    \qquad
+    A=\operatorname{softmax}_{\mathrm{row}}(S),
+    \qquad
+    Z=AV.
+    \label{eq:pe-scaled-dot-product}
+\end{equation}
+
+The row-wise softmax normalizes each query's scores over the keys that it is
+permitted to attend to. In unmasked self-attention, each row of \(A\) sums
+to one. The factor \(\sqrt{d_k}\) controls the scale of the dot products as
+the query and key dimension changes. Without this scaling, the variance of
+the dot products can grow with \(d_k\), pushing softmax toward saturated
+distributions and making optimization less well-conditioned. The formulation
+in \cref{eq:pe-scaled-dot-product} is the self-attention basis from which the
+positional mechanisms considered in this section are developed
+\parencite{zhou2024rethinking}.
+
+The limitation of content-only self-attention can be made precise through
+permutation equivariance. Let \(P\in\mathbb{R}^{L\times L}\) be a permutation
+matrix. Left multiplication by \(P\) rearranges the rows of a sequence
+matrix. If the input is permuted, then
+
+\begin{equation}
+    X'=PX,\qquad Q'=PQ,\qquad K'=PK,\qquad V'=PV.
+    \label{eq:pe-permuted-qkv}
+\end{equation}
+
+For unmasked self-attention, the score matrix becomes
+
+\begin{align}
+    S'
+    &=\frac{Q'K'^{\mathsf T}}{\sqrt{d_k}}\\
+    &=\frac{(PQ)(PK)^{\mathsf T}}{\sqrt{d_k}}\\
+    &=P\frac{QK^{\mathsf T}}{\sqrt{d_k}}P^{\mathsf T}\\
+    &=PSP^{\mathsf T}.
+    \label{eq:pe-permuted-scores}
+\end{align}
+
+Because softmax is applied independently to each row, permuting both the
+query rows and key columns permutes the attention matrix in the same way:
+\(A'=PAP^{\mathsf T}\). The output is therefore
+
+\begin{align}
+    Z'
+    &=A'V'\\
+    &=PAP^{\mathsf T}PV\\
+    &=PAV\\
+    &=PZ.
+    \label{eq:pe-permutation-equivariance}
+\end{align}
+
+Thus, content-only, unmasked self-attention is permutation-equivariant:
+permuting the input representations permutes the outputs, but the operation
+does not independently encode the original sequential positions. In an
+autoregressive language model, a causal mask additionally restricts each
+query to preceding positions. The mask establishes a direction of information
+flow, but positional representations are still needed to provide the
+attention computation with a more expressive account of absolute positions
+and relative displacements. Positional encoding addresses this requirement
+by making position-dependent information available to the network.
+
+\subsection{Absolute Positional Encoding}
+\label{subsec:pe-absolute}
+
+An absolute positional encoding assigns a representation to each position
+independently of the positions occupied by other tokens. If the token at
+position \(p\) has content embedding \(\mathbf{x}_p\), its positional
+representation is denoted by \(\mathbf{e}_p\). In the conventional additive
+formulation, the input to the subsequent Transformer computation is
+
+\begin{equation}
+    \mathbf{h}_p=\mathbf{x}_p+\mathbf{e}_p,
+    \qquad
+    \mathbf{x}_p,\mathbf{e}_p
+    \in\mathbb{R}^{d_{\mathrm{model}}}.
+    \label{eq:pe-absolute-addition}
+\end{equation}
+
+The positional vector must have the same dimensionality as the token
+embedding for this addition to be defined. Absolute positional representations
+can be generated by predetermined functions or learned as model parameters.
+The two alternatives considered by \textcite{zhou2024rethinking} are
+sinusoidal positional encoding and learnable absolute positional encoding.
+
+\paragraph{Sinusoidal positional encoding.}
+Sinusoidal positional encoding constructs each positional vector from sine
+and cosine functions with different frequencies. For an embedding dimension
+\(d_{\mathrm{model}}\), the components are
+
+\begin{align}
+    \operatorname{PE}(p,2i)
+    &=
+    \sin\left(
+        \frac{p}{10000^{2i/d_{\mathrm{model}}}}
+    \right),
+    \label{eq:pe-sinusoidal-even}\\
+    \operatorname{PE}(p,2i+1)
+    &=
+    \cos\left(
+        \frac{p}{10000^{2i/d_{\mathrm{model}}}}
+    \right),
+    \label{eq:pe-sinusoidal-odd}
+\end{align}
+
+where \(p\) is the position index and \(i\) indexes a pair of embedding
+dimensions. Defining the angular frequency
+
+\begin{equation}
+    \omega_i=10000^{-2i/d_{\mathrm{model}}},
+    \label{eq:pe-sinusoidal-frequency}
+\end{equation}
+
+the two components associated with frequency \(\omega_i\) can be written as
+
+\begin{equation}
+    \mathbf{p}_i(p)=
+    \begin{bmatrix}
+        \sin(p\omega_i)\\
+        \cos(p\omega_i)
+    \end{bmatrix}.
+    \label{eq:pe-sinusoidal-pair}
+\end{equation}
+
+The frequencies decrease geometrically as the pair index increases. The
+lower-index pairs therefore change more rapidly with position, while the
+higher-index pairs change more slowly. The complete positional vector
+combines these frequency scales, giving the model a deterministic
+multiscale representation of position.
+
+For example, when \(d_{\mathrm{model}}=4\), there are two frequency pairs.
+Their frequencies are
+
+\begin{equation}
+    \omega_0=10000^0=1,
+    \qquad
+    \omega_1=10000^{-1/2}=0.01.
+    \label{eq:pe-sinusoidal-numeric-frequencies}
+\end{equation}
+
+At position \(p=2\), the positional vector is
+
+\begin{align}
+    \operatorname{PE}(2)
+    &=
+    \begin{bmatrix}
+        \sin(2)\\
+        \cos(2)\\
+        \sin(0.02)\\
+        \cos(0.02)
+    \end{bmatrix}\\
+    &\approx
+    \begin{bmatrix}
+        0.9093\\
+        -0.4161\\
+        0.0200\\
+        0.9998
+    \end{bmatrix}.
+    \label{eq:pe-sinusoidal-numeric-example}
+\end{align}
+
+The first pair varies substantially over a small positional change, whereas
+the second pair varies slowly. Their combination allows positions to be
+represented through multiple periodic scales rather than through a single
+monotonically increasing coordinate.
+
+A useful property of this construction is that a fixed positional
+displacement can be represented by a linear transformation. For a fixed
+offset \(k\), the trigonometric addition identities give
+
+\begin{equation}
+    \mathbf{p}_i(p+k)=
+    \begin{bmatrix}
+        \cos(k\omega_i)&\sin(k\omega_i)\\
+        -\sin(k\omega_i)&\cos(k\omega_i)
+    \end{bmatrix}
+    \mathbf{p}_i(p).
+    \label{eq:pe-sinusoidal-relative-linear}
+\end{equation}
+
+The transformation in \cref{eq:pe-sinusoidal-relative-linear} depends on
+the offset \(k\), not on the absolute position \(p\). Although the encoding
+is defined using absolute positions, this property gives a model a
+mathematical route to learning relationships associated with relative
+displacements. The sinusoidal construction is deterministic and does not
+require a separately learned positional parameter vector for every position
+\parencite{zhou2024rethinking}.
+
+\paragraph{Learnable absolute positional encoding.}
+An alternative is to learn a positional vector for each position. For a
+maximum represented sequence length \(L_{\max}\), the positional parameters
+can be arranged as
+
+\begin{equation}
+    E_{\mathrm{pos}}\in
+    \mathbb{R}^{L_{\max}\times d_{\mathrm{model}}},
+    \qquad
+    \mathbf{e}_p=E_{\mathrm{pos}}[p,:].
+    \label{eq:pe-learned-table}
+\end{equation}
+
+The token and positional vectors are then combined using
+\cref{eq:pe-absolute-addition}. The number of positional parameters is
+
+\begin{equation}
+    N_{\mathrm{pos}}=
+    L_{\max}d_{\mathrm{model}}.
+    \label{eq:pe-learned-parameter-count}
+\end{equation}
+
+Unlike the sinusoidal method, the learned table does not impose a
+predetermined frequency structure across positions. Its positional vectors
+are optimized with the other model parameters. This flexibility makes the
+representation data-dependent, while the explicit table also ties the
+learned parameters to the positions represented during training. The two
+methods therefore differ in how positional structure is supplied: sinusoidal
+encoding imposes a fixed multiscale construction, whereas learnable encoding
+estimates the positional vectors through optimization.
+
+\subsection{Combining Content and Position: Addition and Concatenation}
+\label{subsec:pe-addition-concatenation}
+
+The construction of a positional vector is only one part of the design.
+The model must also determine how positional information is combined with
+token content before the attention projections are applied. Addition is the
+conventional method, but concatenation provides an alternative that keeps
+the two components in distinct parts of the representation.
+
+Under addition, the query and key vectors at positions \(i\) and \(j\) are
+
+\begin{equation}
+    \mathbf{q}_i=(\mathbf{x}_i+\mathbf{p}_i)W_Q,
+    \qquad
+    \mathbf{k}_j=(\mathbf{x}_j+\mathbf{p}_j)W_K.
+    \label{eq:pe-additive-qk}
+\end{equation}
+
+Let \(W_{QK}=W_QW_K^{\mathsf T}\). The unnormalized dot product can be
+expanded into four interactions:
+
+\begin{align}
+    \mathbf{q}_i\mathbf{k}_j^{\mathsf T}
+    &=
+    (\mathbf{x}_i+\mathbf{p}_i)
+    W_{QK}
+    (\mathbf{x}_j+\mathbf{p}_j)^{\mathsf T}
+    \nonumber\\
+    &=
+    \mathbf{x}_iW_{QK}\mathbf{x}_j^{\mathsf T}
+    +\mathbf{p}_iW_{QK}\mathbf{x}_j^{\mathsf T}
+    \nonumber\\
+    &\quad+
+    \mathbf{x}_iW_{QK}\mathbf{p}_j^{\mathsf T}
+    +\mathbf{p}_iW_{QK}\mathbf{p}_j^{\mathsf T}.
+    \label{eq:pe-additive-four-terms}
+\end{align}
+
+The first term is a content-to-content interaction. The second is a
+position-to-content interaction, the third is a content-to-position
+interaction, and the fourth is a position-to-position interaction. In the
+additive formulation, these interactions share the same learned
+query-key interaction matrix \(W_{QK}\). They are consequently not
+parameterized as four independent transformations.
+
+\textcite{zhou2024rethinking} use this decomposition to motivate a
+concatenation-based alternative. To maintain the same total input dimension,
+the content and positional components are each assigned half of the
+representation dimension:
+
+\begin{equation}
+    \mathbf{x}'_i,\mathbf{p}'_i
+    \in\mathbb{R}^{d_{\mathrm{model}}/2},
+    \qquad
+    \mathbf{h}'_i=
+    \mathbf{x}'_i\oplus\mathbf{p}'_i
+    \in\mathbb{R}^{d_{\mathrm{model}}},
+    \label{eq:pe-concatenated-input}
+\end{equation}
+
+where \(\oplus\) denotes vector concatenation. The concatenated
+representation is projected into queries and keys in the usual way. If the
+resulting query-key interaction matrix is partitioned into four blocks,
+
+\begin{equation}
+    W_{QK}=
+    \begin{bmatrix}
+        W_{cc}&W_{cp}\\
+        W_{pc}&W_{pp}
+    \end{bmatrix},
+    \label{eq:pe-concat-block-matrix}
+\end{equation}
+
+then the score contains separately parameterized content-to-content,
+content-to-position, position-to-content, and position-to-position
+interactions:
+
+\begin{align}
+    \mathbf{q}'_i\mathbf{k}'_j{}^{\mathsf T}
+    &=
+    \mathbf{x}'_iW_{cc}\mathbf{x}'_j{}^{\mathsf T}
+    +\mathbf{x}'_iW_{cp}\mathbf{p}'_j{}^{\mathsf T}
+    \nonumber\\
+    &\quad+
+    \mathbf{p}'_iW_{pc}\mathbf{x}'_j{}^{\mathsf T}
+    +\mathbf{p}'_iW_{pp}\mathbf{p}'_j{}^{\mathsf T}.
+    \label{eq:pe-concat-four-terms}
+\end{align}
+
+The block decomposition makes the distinction between the two methods
+explicit. Addition uses a shared interaction matrix for the four terms,
+whereas concatenation allows the corresponding blocks to be learned
+independently. The dimension reduction in \cref{eq:pe-concatenated-input}
+keeps the concatenated input dimension equal to that of the additive
+representation. The conceptual difference is illustrated in
+\cref{fig:pe-addition-concatenation}.
+
+Zhou et al. argue that content and positional vectors represent distinct
+types of information and that independently parameterized interaction
+spaces can therefore be beneficial. Their experiments compare addition and
+concatenation in several single-scale and multiscale Vision Transformer
+models. They report performance differences ranging from approximately
+\(0.1\) to \(0.5\) percentage points in top-1 ImageNet-1K accuracy in
+favor of concatenation for several evaluated models, without a systematic
+increase in computation overhead. These are results from vision
+architectures and image-classification experiments; they should not be
+interpreted as direct evidence that concatenation is superior for language
+models. The contribution relevant to language-model architecture is the
+analysis of how the choice of combination operation changes the
+parameterization of content-position interactions \parencite{zhou2024rethinking}.
+
+\subsection{Relative Positional Encoding and Rotary Position Embedding}
+\label{subsec:pe-relative-rope}
+
+Absolute positional encoding assigns a representation to each individual
+position. Many relationships between tokens, however, are naturally
+described by the displacement between their positions. If two tokens occur
+at positions \(m\) and \(n\), their signed relative displacement is
+
+\begin{equation}
+    \Delta=m-n.
+    \label{eq:pe-relative-displacement}
+\end{equation}
+
+For example, the pairs \((m,n)=(10,7)\) and \((m,n)=(100,97)\) have
+different absolute positions but the same displacement, \(\Delta=3\).
+A relative positional method aims to make the interaction between the
+tokens depend on this relationship. One family of relative methods uses
+learnable representations indexed by relative displacement. Rotary
+Position Embedding (RoPE) achieves a related objective by rotating query
+and key representations according to their absolute positions so that
+their inner product depends on the relative displacement
+\parencite{zhou2024rethinking,zhang2024foundmiddle}.
+
+\paragraph{Two-dimensional rotations.}
+The mathematical basis of RoPE is a rotation in a two-dimensional real
+vector space. For an angle \(\phi\), define
+
+\begin{equation}
+    R(\phi)=
+    \begin{bmatrix}
+        \cos\phi&-\sin\phi\\
+        \sin\phi&\cos\phi
+    \end{bmatrix}.
+    \label{eq:pe-rotation-matrix}
+\end{equation}
+
+For a vector \(\mathbf{x}\in\mathbb{R}^2\), the rotated vector is
+\(R(\phi)\mathbf{x}\). The matrix is orthogonal:
+
+\begin{equation}
+    R(\phi)^{\mathsf T}R(\phi)=I,
+    \qquad
+    R(\phi)^{\mathsf T}=R(-\phi).
+    \label{eq:pe-rotation-orthogonality}
+\end{equation}
+
+It follows that rotations preserve the Euclidean norm,
+
+\begin{equation}
+    \|R(\phi)\mathbf{x}\|_2^2
+    =
+    \mathbf{x}^{\mathsf T}R(\phi)^{\mathsf T}
+    R(\phi)\mathbf{x}
+    =
+    \|\mathbf{x}\|_2^2.
+    \label{eq:pe-rotation-norm}
+\end{equation}
+
+The composition of two rotations adds their angles:
+
+\begin{equation}
+    R(\alpha)R(\beta)=R(\alpha+\beta).
+    \label{eq:pe-rotation-composition}
+\end{equation}
+
+These identities are the essential algebraic properties used by RoPE.
+Equivalently, a two-dimensional vector can be represented as a complex
+number \(z=x_1+\mathrm{i}x_2\), and multiplication by
+\(e^{\mathrm{i}\phi}\) performs the same rotation through Euler's identity.
+
+\paragraph{Frequency-dependent rotations.}
+Let the query and key dimension of one attention head be \(d_h\), assumed
+even. RoPE groups the vector coordinates into \(d_h/2\) pairs and assigns
+a different angular frequency to each pair. With the frequency convention
+used in the papers considered here,
+
+\begin{equation}
+    \theta_j=10000^{-2j/d_h},
+    \qquad
+    j=0,1,\ldots,\frac{d_h}{2}-1.
+    \label{eq:pe-rope-frequencies}
+\end{equation}
+
+For position \(m\), the complete rotation is a block-diagonal matrix,
+
+\begin{equation}
+    R_m=
+    \operatorname{diag}
+    \left(
+        R(m\theta_0),
+        R(m\theta_1),
+        \ldots,
+        R(m\theta_{d_h/2-1})
+    \right).
+    \label{eq:pe-rope-block-rotation}
+\end{equation}
+
+The transformed query and key vectors are
+
+\begin{equation}
+    \widetilde{\mathbf{q}}_m=R_m\mathbf{q}_m,
+    \qquad
+    \widetilde{\mathbf{k}}_n=R_n\mathbf{k}_n.
+    \label{eq:pe-rope-qk}
+\end{equation}
+
+The query-key inner product is then
+
+\begin{align}
+    \widetilde{\mathbf{q}}_m^{\mathsf T}
+    \widetilde{\mathbf{k}}_n
+    &=
+    (R_m\mathbf{q}_m)^{\mathsf T}
+    (R_n\mathbf{k}_n)\\
+    &=
+    \mathbf{q}_m^{\mathsf T}
+    R_m^{\mathsf T}R_n
+    \mathbf{k}_n\\
+    &=
+    \mathbf{q}_m^{\mathsf T}
+    R_{n-m}
+    \mathbf{k}_n.
+    \label{eq:pe-rope-relative-inner-product}
+\end{align}
+
+The last equality follows from the orthogonality and composition
+properties in \cref{eq:pe-rotation-orthogonality,eq:pe-rotation-composition}.
+It establishes the central property of RoPE: although each query and key
+is transformed using its own absolute position, their attention
+interaction contains a rotation determined by the relative displacement
+\(n-m\). The sign of the displacement depends on the convention used for
+the rotation matrix; the essential property is dependence on the difference
+between positions. The structure is summarized in
+\cref{fig:pe-rope-relative-position}.
+
+The multiple frequencies in \cref{eq:pe-rope-frequencies} cause different
+coordinate pairs to rotate at different rates. Higher-frequency components
+change phase more rapidly as position changes, while lower-frequency
+components change more gradually. RoPE therefore introduces positional
+information at multiple frequency scales directly into query-key
+interactions. It does not require a separate learned positional embedding
+table, because the transformations are determined by the position indices
+and the frequency schedule \parencite{zhang2024foundmiddle}.
+
+\subsection{Long-Context Position Rescaling and Multi-Scale Positional Encoding}
+\label{subsec:pe-mspoe}
+
+The ability to encode relative displacement does not guarantee that a
+language model will use all positions in a long input equally well.
+\textcite{zhang2024foundmiddle} study the ``lost-in-the-middle''
+phenomenon: relevant information can be overlooked when it occurs in the
+middle of a long context, even when the model can process the complete
+sequence. They identify two contributing factors. First, causal attention
+can favor initial tokens because these tokens are available to a larger
+number of subsequent queries. Second, the long-distance behavior associated
+with RoPE can reduce attention to distant tokens, including tokens that
+contain relevant information.
+
+The latter observation should be interpreted as an empirical property of
+the resulting attention behavior, not as a theorem that every individual
+RoPE query-key score decreases monotonically with distance. The rotation
+matrices themselves preserve vector norms, and their inner-product
+contributions vary with relative phase. The paper's motivation is that the
+combined behavior of RoPE-based attention in the evaluated models can
+contribute to reduced use of distant context.
+
+\paragraph{Uniform positional rescaling.}
+Since RoPE uses position indices to determine rotation angles, the
+effective positional distances can be changed by rescaling the indices.
+For a positive scaling factor \(r\), replace position \(m\) by
+
+\begin{equation}
+    m'=\frac{m}{r}.
+    \label{eq:pe-position-rescaling}
+\end{equation}
+
+For two positions \(m\) and \(n\), the rescaled displacement becomes
+
+\begin{equation}
+    \Delta'
+    =
+    \frac{m}{r}-\frac{n}{r}
+    =
+    \frac{m-n}{r}
+    =
+    \frac{\Delta}{r}.
+    \label{eq:pe-rescaled-displacement}
+\end{equation}
+
+When \(r>1\), the effective positional distance is compressed. When
+\(0<r<1\), it is expanded, and \(r=1\) recovers the original RoPE
+positions. For example, two tokens separated by \(3{,}000\) positions
+have an effective separation of
+
+\begin{equation}
+    \Delta'=\frac{3000}{1.5}=2000
+    \label{eq:pe-rescaling-numeric-example}
+\end{equation}
+
+when \(r=1.5\). The sequence itself is not shortened and no tokens are
+removed; only the positional indices used by the rotary transformation
+are remapped. This can reduce the phase difference between distant
+positions and potentially alleviate the long-distance decay observed by
+the authors.
+
+Uniform rescaling has a trade-off. A factor that is too large can alter
+the positional patterns learned during pre-training and can change which
+regions of the context the model favors. Fractional rescaled positions
+may also differ from the integer position indices encountered during
+pre-training, creating a positional out-of-distribution concern. In the
+experiments reported by Zhang et al., small scaling factors such as
+\(0.5\) favor more recent context, whereas larger factors such as \(2.5\)
+can favor the beginning of the context. A factor near \(1.5\) improves
+average performance in their initial rescaling experiments, but a single
+factor does not account for the different positional behavior of
+individual attention heads.
+
+\paragraph{Position-awareness across attention heads.}
+The motivation for Multi-Scale Positional Encoding (Ms-PoE) is the
+observation that attention heads differ in their ability to follow relevant
+information when its position changes. Some heads shift their attention
+toward the relevant content as that content moves through the input.
+Other heads remain more strongly concentrated on the beginning and end
+regions. Zhang et al. use the term \emph{position-aware} for heads that
+can capture relevant information across these positional changes.
+
+For a layer \(k\), let the attention distribution of head \(h\) for the
+most recent query be
+
+\begin{equation}
+    \mathbf{A}_{k,h}
+    =
+    [A_{k,h,1},A_{k,h,2},\ldots,A_{k,h,L}],
+    \qquad
+    \sum_{t=1}^{L}A_{k,h,t}=1.
+    \label{eq:pe-mspoe-attention-vector}
+\end{equation}
+
+Its mean component is \(1/L\). The Position-Awareness Score is defined as
+
+\begin{equation}
+    S^P_{k,h}
+    =
+    \frac{1}{L}
+    \sum_{t=1}^{L}
+    \mathbb{I}
+    \left(
+        A_{k,h,t}
+        \geq
+        \alpha
+        \frac{1}{L}
+        \sum_{j=1}^{L}A_{k,h,j}
+    \right),
+    \label{eq:pe-position-awareness-score}
+\end{equation}
+
+where \(\mathbb{I}(\cdot)\) is the indicator function and \(\alpha\) is
+a threshold hyperparameter. The experiments use \(\alpha=3\). Because
+the attention weights sum to one, the threshold in this case is
+\(3/L\). The score is the fraction of positions whose attention weights
+are at least three times the mean attention weight. A larger value
+indicates that a larger fraction of positions receive attention above
+this threshold. This score is an operational measure introduced by the
+authors; it is not itself a direct measure of semantic understanding or
+retrieval accuracy.
+
+For each layer, heads are sorted in descending order of their
+Position-Awareness Scores. The most position-aware head receives a
+rescaling factor near one, while heads with lower scores receive larger
+factors. The authors use a linearly spaced set of factors from \(1.2\)
+to \(1.8\). For the head at sorted rank \(i\), the assigned factor is
+
+\begin{equation}
+    r_i=
+    1.2+
+    \frac{(i-1)(1.8-1.2)}{n_h-1},
+    \qquad i=1,\ldots,n_h,
+    \label{eq:pe-mspoe-scaling-ratio}
+\end{equation}
+
+where \(n_h\) is the number of attention heads in the layer. Thus, the
+first head in the descending positional-awareness ordering receives
+\(r_1=1.2\), and the last receives \(r_{n_h}=1.8\). The factors are
+assigned separately within each layer. The resulting head-specific
+positional transformation is
+
+\begin{equation}
+    \widetilde{\mathbf{q}}_{k,h,m}
+    =
+    R\left(\frac{m}{r_{k,h}}\right)
+    \mathbf{q}_{k,h,m},
+    \qquad
+    \widetilde{\mathbf{k}}_{k,h,n}
+    =
+    R\left(\frac{n}{r_{k,h}}\right)
+    \mathbf{k}_{k,h,n},
+    \label{eq:pe-mspoe-headwise-rope}
+\end{equation}
+
+where \(R(\cdot)\) denotes the frequency-dependent block rotation
+defined earlier. The relative displacement used by head \(h\) in layer
+\(k\) is consequently \((m-n)/r_{k,h}\). Different heads therefore
+operate with different effective positional scales. The arrangement is
+illustrated in \cref{fig:pe-mspoe-headwise}.
+
+\paragraph{Inference procedure and computational considerations.}
+Ms-PoE is applied to a pre-trained model that already uses RoPE. During
+prefilling, the model obtains the attention distribution of the most
+recent query for every head in every layer. It computes the
+Position-Awareness Scores, sorts the heads within each layer, and assigns
+the linearly spaced rescaling factors. These factors remain fixed during
+the subsequent decoding stage. The procedure does not require additional
+fine-tuning or additional trainable positional parameters
+\parencite{zhang2024foundmiddle}.
+
+\begin{algorithm}[H]
+    \caption{Head-wise positional rescaling in Ms-PoE}
+    \label{alg:pe-mspoe}
+    \KwIn{Pre-trained RoPE-based language model; input sequence; number
+    of layers \(n_l\); number of heads \(n_h\); threshold \(\alpha\);
+    scaling interval \([1.2,1.8]\).}
+    \KwOut{Generated sequence using head-specific positional rescaling.}
+    \For{\(k=1\) \KwTo \(n_l\)}{
+        Obtain the most recent query and the keys for layer \(k\)\;
+        \For{\(h=1\) \KwTo \(n_h\)}{
+            Obtain the attention distribution
+            \(\mathbf{A}_{k,h}\)\;
+            Compute \(S^P_{k,h}\) using
+            \cref{eq:pe-position-awareness-score}\;
+        }
+        Sort the heads by \(S^P_{k,h}\) in descending order\;
+        Assign the factors \(r_i\) using
+        \cref{eq:pe-mspoe-scaling-ratio}\;
+        Associate each assigned factor with its sorted head\;
+    }
+    Replace the original RoPE position indices by the corresponding
+    head-specific rescaled indices during decoding\;
+    Generate tokens autoregressively using the fixed factors\;
+\end{algorithm}
+
+The attention vectors used for the score are already part of the
+prefilling attention computation. Given these vectors, evaluating the
+threshold indicator for all heads and positions requires
+\(O(n_l n_h L)\) comparisons. Sorting the \(n_h\) heads in each layer
+requires \(O(n_l n_h\log n_h)\) comparisons. Storing the scores and
+assigned factors requires \(O(n_l n_h)\) scalar values. These costs
+describe the additional score-reduction and ordering operations implied
+by the procedure; the method does not introduce a new trainable
+parameter matrix or a new attention layer. Once the factors are fixed,
+the decoding stage uses the modified RoPE transformations for the
+existing heads.
+
+\paragraph{Experimental evaluation.}
+Zhang et al. evaluate Ms-PoE on long-context generation and retrieval
+tasks using Llama-2, StableBeluga, and Vicuna models. On the
+ZeroSCROLLS benchmark, they report average improvements over the
+corresponding baselines for the evaluated models. The reported average
+gain is \(1.6\) points for Llama-2-7B-Chat, \(0.9\) for
+Llama-2-13B-Chat, \(2.6\) for StableBeluga-7B, \(0.6\) for
+StableBeluga-13B, \(3.8\) for Vicuna-7B, and \(3.3\) for
+Vicuna-7B-16K. The results indicate improvements across the reported
+model sizes and context configurations, although the magnitude varies
+by model and task \parencite{zhang2024foundmiddle}.
+
+The multi-document question-answering and key-value retrieval
+experiments vary the location of the relevant document or key-value
+pair. For Vicuna-7B, the average multi-document question-answering
+accuracy increases from \(61.12\%\) for the baseline to \(65.04\%\)
+with Ms-PoE. For key-value retrieval, the corresponding average
+increases from \(36.24\%\) to \(79.96\%\). The authors average results
+over \(500\) samples and use the difference between the best and worst
+accuracy across relevant-information positions as a measure of
+positional sensitivity:
+
+\begin{equation}
+    \operatorname{GapAccuracy}
+    =
+    \max_{p}\operatorname{Acc}(p)
+    -
+    \min_{p}\operatorname{Acc}(p),
+    \label{eq:pe-gap-accuracy}
+\end{equation}
+
+where \(\operatorname{Acc}(p)\) is the accuracy when the relevant
+information is placed at position \(p\). A smaller gap indicates less
+variation in accuracy as the location of relevant information changes.
+The results show that Ms-PoE improves average retrieval performance
+and reduces the positional gap in the evaluated settings
+\parencite{zhang2024foundmiddle}.
+
+The ablation experiments also examine the way scaling factors are
+assigned. In the reported multi-document question-answering experiment,
+the position-awareness ordering achieves an average accuracy of
+\(65.3\%\), compared with \(61.7\%\) for random assignment,
+\(57.8\%\) for sequential assignment, and \(62.3\%\) for
+attention-entropy-based assignment. The baseline average is
+\(62.1\%\). These results support the authors' claim that head-wise
+positional-awareness information provides a more effective assignment
+criterion than the tested alternatives. They do not establish that the
+same ordering criterion is optimal for every architecture or task.
+
+\subsection{Limitations and Connection to the Next Architectural Components}
+\label{subsec:pe-limitations-transition}
+
+Positional encoding determines how a Transformer represents token
+locations and how positional information enters attention interactions.
+The methods considered here make different design choices. Sinusoidal
+encoding imposes a fixed multiscale trigonometric structure; learnable
+absolute encoding estimates a positional table during training; addition
+and concatenation determine how content and position are combined;
+RoPE uses position-dependent rotations whose query-key interaction
+depends on relative displacement; and Ms-PoE modifies RoPE at inference
+by assigning different rescaling factors to different attention heads.
+
+Each construction has limitations. A learned absolute positional table
+is tied to the positions represented by its parameters. Sinusoidal
+encoding supplies a fixed frequency structure, but the model must still
+learn to use that structure through its projections. Concatenation
+changes the parameterization of content-position interactions, but the
+experimental comparison reported by Zhou et al. concerns vision
+architectures and cannot by itself establish an advantage for language
+models. RoPE provides a relative-position interaction through rotations,
+but its behavior over long distances can still be associated with
+reduced utilization of distant context. Ms-PoE addresses this issue in
+the evaluated models, but its head-wise score is a threshold-based
+proxy, its factors are selected from a specified interval, and
+rescaling can create positional patterns that differ from those seen
+during pre-training.
+
+The central architectural conclusion is that positional encoding is
+not merely an auxiliary vector added to token embeddings. It determines
+how sequence order and relative displacement influence the attention
+computation, and therefore affects how a language model can represent
+and use information distributed across a sequence. With token content
+and positional relationships now specified as inputs to the attention
+mechanism, the next architectural question is how each token
+representation is further transformed after attention. This leads to
+the feed-forward component of the Transformer, which applies
+position-wise nonlinear transformations to the representations
+constructed by attention.
+
+% ----------------------------------------------------------------------------
+% Figures
+% ----------------------------------------------------------------------------
+% Figure source code is stored separately in the root-level figures/
+% directory and is included here. Alt text is recorded in comments.
+
+\input{figures/pe_addition_concatenation.tex}
+% Alt text: Two parallel diagrams compare adding a full-dimensional
+% positional vector to a token embedding with concatenating two
+% half-dimensional content and positional vectors.
+
+\input{figures/pe_rope_relative_position.tex}
+% Alt text: Query and key vectors at positions m and n are separately
+% rotated by their position-dependent RoPE transformations; their inner
+% product is expressed using a rotation determined by the relative offset.
+
+\input{figures/pe_mspoe_headwise.tex}
+% Alt text: Attention heads are ranked by positional-awareness scores
+% and assigned different rescaling factors between 1.2 and 1.8 before
+% head-specific RoPE transformations are applied.

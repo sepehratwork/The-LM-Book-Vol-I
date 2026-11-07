@@ -1,0 +1,1007 @@
+% ============================================================================
+% Feed-Forward Networks
+% Included immediately after the corresponding \section command in the
+% architecture chapter. This file intentionally contains no \chapter,
+% \section, package imports, or document-level commands.
+% ============================================================================
+
+Positional encoding supplies token representations with information about
+their positions in a sequence. Position information, however, does not by
+itself specify how the features represented by each token are transformed
+into increasingly useful internal representations. A Transformer therefore
+requires computational components that operate on the feature dimensions of
+token representations in addition to components that establish relationships
+between different token positions. The feed-forward network (FFN) provides
+this feature-transformation mechanism. In a conventional Transformer block,
+the FFN is applied independently to each token representation, using the
+same learned parameters at every sequence position
+\parencite{dai2024deepseekmoe,cai2025survey}.
+
+The distinction between position-wise processing and sequence-wise
+interaction is fundamental. An FFN transforms the feature vector associated
+with one token without directly combining it with the feature vectors of
+other tokens. The parameters are shared across positions, so the same
+nonlinear mapping is applied throughout the sequence. This arrangement
+complements the self-attention sublayer, which supplies interactions between
+token positions. The present section develops the mathematical structure of
+the FFN, examines its parameter and computational requirements, and then
+follows the architectural transition from dense FFNs to sparsely activated
+mixtures of FFN experts.
+
+\subsection{Position-Wise Feed-Forward Networks}
+\label{subsec:ffn-position-wise}
+
+Let a sequence contain \(T\) tokens, and let
+\(d_{\mathrm{model}}\) denote the dimensionality of each token
+representation. The representation of token \(t\) is a vector
+\(\mathbf{x}_t\in\mathbb{R}^{d_{\mathrm{model}}}\). A sequence can be
+represented by a matrix
+\[
+    \mathbf{X}
+    =
+    \begin{bmatrix}
+        \mathbf{x}_1 & \mathbf{x}_2 & \cdots & \mathbf{x}_T
+    \end{bmatrix}
+    \in
+    \mathbb{R}^{d_{\mathrm{model}}\times T},
+\]
+where each column corresponds to one token. This column-wise convention
+will be used throughout the mathematical development.
+
+A standard two-projection FFN first maps the input representation into an
+intermediate feature space, applies an element-wise nonlinear activation,
+and then maps the result back into the model hidden space. For one token,
+the computation is
+\begin{align}
+    \mathbf{a}_t
+    &=
+    \mathbf{W}_1\mathbf{x}_t+\mathbf{b}_1,
+    \label{eq:ffn-first-projection}\\
+    \widetilde{\mathbf{a}}_t
+    &=
+    \phi(\mathbf{a}_t),
+    \label{eq:ffn-elementwise-activation}\\
+    \mathbf{y}_t
+    &=
+    \mathbf{W}_2\widetilde{\mathbf{a}}_t+\mathbf{b}_2.
+    \label{eq:ffn-second-projection}
+\end{align}
+Here, \(d_{\mathrm{ff}}\) is the intermediate hidden dimension,
+\(\mathbf{W}_1\in\mathbb{R}^{d_{\mathrm{ff}}\times d_{\mathrm{model}}}\)
+is the input-projection matrix,
+\(\mathbf{b}_1\in\mathbb{R}^{d_{\mathrm{ff}}}\) is its bias vector,
+\(\mathbf{W}_2\in\mathbb{R}^{d_{\mathrm{model}}\times d_{\mathrm{ff}}}\)
+is the output-projection matrix, and
+\(\mathbf{b}_2\in\mathbb{R}^{d_{\mathrm{model}}}\) is the output bias.
+The activation function \(\phi\) acts element-wise on its vector argument.
+The dimensions therefore satisfy
+\[
+\begin{aligned}
+    \mathbf{x}_t
+        &\in \mathbb{R}^{d_{\mathrm{model}}},&
+    \mathbf{a}_t,\widetilde{\mathbf{a}}_t
+        &\in \mathbb{R}^{d_{\mathrm{ff}}},&
+    \mathbf{y}_t
+        &\in \mathbb{R}^{d_{\mathrm{model}}}.
+\end{aligned}
+\]
+For a bias-free formulation, the bias vectors are omitted. The essential
+structure is the same: an input projection, an element-wise nonlinearity,
+and an output projection. The conventional FFN is consequently a
+two-layer multilayer perceptron whose input and output dimensions agree,
+while its intermediate dimension may be wider. The description of standard
+FFN experts as linear--activation--linear networks is also used in the
+MoE literature \parencite{dai2024deepseekmoe,cai2025survey}.
+
+The complete sequence is processed by applying the same matrices and bias
+vectors to every column:
+\begin{align}
+    \mathbf{A}
+    &=
+    \mathbf{W}_1\mathbf{X}
+    +\mathbf{b}_1\mathbf{1}_T^{\top},
+    \label{eq:ffn-batch-first}\\
+    \widetilde{\mathbf{A}}
+    &=
+    \phi(\mathbf{A}),
+    \label{eq:ffn-batch-activation}\\
+    \mathbf{Y}
+    &=
+    \mathbf{W}_2\widetilde{\mathbf{A}}
+    +\mathbf{b}_2\mathbf{1}_T^{\top},
+    \label{eq:ffn-batch-second}
+\end{align}
+where \(\mathbf{1}_T\in\mathbb{R}^{T}\) is the all-ones vector. Thus,
+\(\mathbf{A},\widetilde{\mathbf{A}}\in
+\mathbb{R}^{d_{\mathrm{ff}}\times T}\) and
+\(\mathbf{Y}\in\mathbb{R}^{d_{\mathrm{model}}\times T}\).
+The matrix multiplication acts on the feature dimension of each column;
+there is no multiplication between different token columns. Therefore,
+for every \(t\), the output \(\mathbf{y}_t\) depends on
+\(\mathbf{x}_t\) and the shared FFN parameters, but not directly on
+\(\mathbf{x}_{s}\) for \(s\ne t\).
+
+The nonlinearity is necessary for the composition to represent a
+nonlinear mapping. If \(\phi\) were the identity function and the biases
+were zero, then
+\[
+    \mathbf{y}_t
+    =
+    \mathbf{W}_2\mathbf{W}_1\mathbf{x}_t.
+\]
+The product \(\mathbf{W}_2\mathbf{W}_1\) is itself a matrix, so the two
+projections would collapse to one linear transformation. An intervening
+nonlinear activation prevents this reduction in general and allows the
+FFN to implement a nonlinear feature transformation. The specific
+mathematical properties of the activation function are treated in the
+subsequent section on activation functions.
+
+\subsection{Parameterization and Computational Complexity}
+\label{subsec:ffn-parameters-complexity}
+
+The dimensional structure of an FFN determines its parameter count.
+Ignoring bias parameters, the input-projection matrix contains
+\(d_{\mathrm{ff}}d_{\mathrm{model}}\) entries, and the output-projection
+matrix contains \(d_{\mathrm{model}}d_{\mathrm{ff}}\) entries. The total
+number of weight parameters is therefore
+\begin{align}
+    P_{\mathrm{FFN}}
+    &=
+    d_{\mathrm{ff}}d_{\mathrm{model}}
+    +d_{\mathrm{model}}d_{\mathrm{ff}}\\
+    &=
+    2d_{\mathrm{model}}d_{\mathrm{ff}}.
+    \label{eq:ffn-parameter-count}
+\end{align}
+When both bias vectors are included, the total becomes
+\begin{equation}
+    P_{\mathrm{FFN,bias}}
+    =
+    2d_{\mathrm{model}}d_{\mathrm{ff}}
+    +d_{\mathrm{ff}}+d_{\mathrm{model}}.
+    \label{eq:ffn-parameter-count-bias}
+\end{equation}
+
+It is useful to express the intermediate dimension relative to the model
+dimension. Define the expansion ratio
+\begin{equation}
+    r
+    =
+    \frac{d_{\mathrm{ff}}}{d_{\mathrm{model}}},
+    \qquad
+    d_{\mathrm{ff}}=r\,d_{\mathrm{model}}.
+    \label{eq:ffn-expansion-ratio}
+\end{equation}
+Substitution into \cref{eq:ffn-parameter-count} gives
+\begin{equation}
+    P_{\mathrm{FFN}}
+    =
+    2r\,d_{\mathrm{model}}^2.
+    \label{eq:ffn-parameter-expansion}
+\end{equation}
+For a fixed expansion ratio, the number of FFN weight parameters therefore
+grows quadratically with the model hidden dimension. The intermediate
+dimension is an architectural choice rather than a universal constant; its
+value depends on the model configuration.
+
+The dominant arithmetic cost is incurred by the two matrix
+multiplications. Let \(M\) denote the total number of token vectors
+processed by the FFN in a batch. The first projection requires
+\(M d_{\mathrm{model}}d_{\mathrm{ff}}\) multiply--accumulate operations
+(MACs), and the second projection requires the same number. Thus,
+\begin{equation}
+    C_{\mathrm{FFN}}
+    =
+    2M d_{\mathrm{model}}d_{\mathrm{ff}}
+    \quad\text{MACs}.
+    \label{eq:ffn-macs}
+\end{equation}
+When a multiplication and an addition are counted as separate
+floating-point operations, the corresponding leading-order arithmetic
+count is
+\begin{equation}
+    F_{\mathrm{FFN}}
+    \approx
+    4M d_{\mathrm{model}}d_{\mathrm{ff}}
+    \quad\text{FLOPs}.
+    \label{eq:ffn-flops}
+\end{equation}
+This estimate counts the two dominant projections. Bias additions and
+element-wise activation operations add work of order
+\(O(Md_{\mathrm{ff}})\), which is lower order than the matrix
+multiplications when the model dimensions are large. The estimate also
+uses the conventional dense-matrix arithmetic count; actual latency
+depends on hardware, precision, memory movement, and kernel efficiency.
+
+The distinction between parameter count and arithmetic cost is important.
+The matrices are shared across all token positions, so changing the
+sequence length does not change the number of FFN parameters. It does,
+however, change the number of times those parameters are used and
+therefore changes the computation approximately linearly in \(M\).
+Increasing \(d_{\mathrm{model}}\) or \(d_{\mathrm{ff}}\), in contrast,
+changes both parameter count and per-token computation.
+
+\subsection{Gated Feed-Forward Networks and Their Internal Units}
+\label{subsec:ffn-gated}
+
+The two-projection FFN is a useful basic model, but modern language-model
+FFNs can introduce an additional projection that controls the
+intermediate features. Lo et al. examine the three-projection expert
+structure used in LLaMA-style MoE models and write its computation as
+\parencite{lo2025closer}:
+\begin{equation}
+    E(\mathbf{x})
+    =
+    \mathbf{W}_{\mathrm{down}}
+    \left[
+        \left(\mathbf{W}_{\mathrm{up}}\mathbf{x}\right)
+        \odot
+        \sigma\left(\mathbf{W}_{\mathrm{act}}\mathbf{x}\right)
+    \right].
+    \label{eq:ffn-gated}
+\end{equation}
+Here, \(\mathbf{x}\in\mathbb{R}^{d_{\mathrm{hid}}}\),
+\(\mathbf{W}_{\mathrm{up}},\mathbf{W}_{\mathrm{act}}
+\in\mathbb{R}^{d_{\mathrm{mid}}\times d_{\mathrm{hid}}}\), and
+\(\mathbf{W}_{\mathrm{down}}
+\in\mathbb{R}^{d_{\mathrm{hid}}\times d_{\mathrm{mid}}}\).
+The symbol \(\odot\) denotes element-wise multiplication, and
+\(\sigma\) is an element-wise activation function. Both the input and
+output of the expert belong to \(\mathbb{R}^{d_{\mathrm{hid}}}\), while
+the two intermediate projections produce vectors in
+\(\mathbb{R}^{d_{\mathrm{mid}}}\).
+
+The up projection produces
+\begin{equation}
+    \mathbf{a}
+    =
+    \mathbf{W}_{\mathrm{up}}\mathbf{x},
+    \label{eq:ffn-gated-up}
+\end{equation}
+whereas the activation projection produces
+\begin{equation}
+    \mathbf{g}
+    =
+    \sigma\left(\mathbf{W}_{\mathrm{act}}\mathbf{x}\right).
+    \label{eq:ffn-gated-control}
+\end{equation}
+Their element-wise product is
+\begin{equation}
+    \mathbf{z}
+    =
+    \mathbf{a}\odot\mathbf{g},
+    \qquad
+    z_i=a_i g_i,
+    \quad i=1,\ldots,d_{\mathrm{mid}}.
+    \label{eq:ffn-gated-product}
+\end{equation}
+The down projection then maps this modulated intermediate representation
+back to the hidden dimension:
+\begin{equation}
+    E(\mathbf{x})
+    =
+    \mathbf{W}_{\mathrm{down}}\mathbf{z}.
+    \label{eq:ffn-gated-down}
+\end{equation}
+The additional projection is not merely a different choice of activation
+function. It supplies a second learned transformation of the input, and
+its output controls the intermediate features through element-wise
+multiplication.
+
+Ignoring biases, the three matrices contain
+\begin{align}
+    P_{\mathrm{gated}}
+    &=
+    d_{\mathrm{mid}}d_{\mathrm{hid}}
+    +d_{\mathrm{mid}}d_{\mathrm{hid}}
+    +d_{\mathrm{hid}}d_{\mathrm{mid}}\\
+    &=
+    3d_{\mathrm{hid}}d_{\mathrm{mid}}
+    \label{eq:ffn-gated-parameters}
+\end{align}
+parameters. This is 50\% more projection parameters than a two-projection
+FFN with the same input, output, and intermediate dimensions. For
+\(M\) tokens, the three projections require approximately
+\(3M d_{\mathrm{hid}}d_{\mathrm{mid}}\) MACs, or
+\(6M d_{\mathrm{hid}}d_{\mathrm{mid}}\) FLOPs when each
+multiply--accumulate is counted as two FLOPs, in addition to
+element-wise operations.
+
+The dimensions reported by Lo et al. for the Mistral 7B configuration
+include \(d_{\mathrm{hid}}=4096\) and \(d_{\mathrm{mid}}=14336\).
+Using these dimensions in the three-projection expression gives
+\begin{align}
+    P_{\mathrm{gated}}
+    &=
+    3(4096)(14336)\\
+    &=
+    176\,160\,768.
+    \label{eq:ffn-gated-numeric}
+\end{align}
+This is the weight count for the three projection matrices under the
+bias-free formulation. It is not a count of every parameter in the
+Transformer block or the complete language model
+\parencite{lo2025closer}.
+
+The three-projection formulation also permits the contribution of each
+intermediate unit to be examined explicitly. Let
+\(\mathbf{W}_{\mathrm{up}}[i,:]\) and
+\(\mathbf{W}_{\mathrm{act}}[i,:]\) denote the \(i\)-th rows of the
+up and activation matrices, and let
+\(\mathbf{W}_{\mathrm{down}}[:,i]\) denote the \(i\)-th column of the
+down matrix. The contribution of unit \(i\) is determined by
+\begin{equation}
+    z_i
+    =
+    \left(\mathbf{W}_{\mathrm{up}}[i,:]\mathbf{x}\right)
+    \sigma\left(\mathbf{W}_{\mathrm{act}}[i,:]\mathbf{x}\right).
+    \label{eq:ffn-neuron-activation}
+\end{equation}
+The complete expert output can consequently be decomposed as
+\begin{equation}
+    E(\mathbf{x})
+    =
+    \sum_{i=1}^{d_{\mathrm{mid}}}
+    \mathbf{W}_{\mathrm{down}}[:,i]\,
+    \left[
+        \left(\mathbf{W}_{\mathrm{up}}[i,:]\mathbf{x}\right)
+        \sigma\left(\mathbf{W}_{\mathrm{act}}[i,:]\mathbf{x}\right)
+    \right].
+    \label{eq:ffn-neuron-decomposition}
+\end{equation}
+Each intermediate unit therefore combines two input-side projections
+with an output-side vector. The input projections determine the
+input-dependent scalar activation of that unit, and the corresponding
+column of the down matrix determines the direction of its contribution
+in the output space.
+
+Lo et al. use this decomposition to motivate the interpretation of FFN
+neurons as fine-grained computational experts. This is a functional
+interpretation of the internal units, not a claim that each neuron is an
+independent expert network with its own router. The activation projection
+controls intermediate neurons within one FFN, whereas an MoE router
+selects among complete expert modules. These are distinct levels of
+computation \parencite{lo2025closer}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/ffn_architecture.tex}
+    \caption{Schematic comparison of a standard position-wise FFN, a
+    three-projection gated FFN, and a sparsely routed MoE layer. In the
+    standard FFN, the input is projected, transformed element-wise, and
+    projected back to the model dimension. In the gated FFN, parallel up
+    and activation projections are combined element-wise before the
+    down projection. In the sparse MoE layer, a router selects a subset
+    of FFN experts whose weighted outputs are aggregated.}
+    \label{fig:ffn-architectures}
+\end{figure}
+% Alt text for accessibility register: Three horizontal computational
+% diagrams compare a two-projection FFN, a gated three-projection FFN with
+% parallel up and activation branches, and a sparse MoE layer with a router,
+% selected experts, and weighted output aggregation.
+
+\subsection{Feed-Forward Networks Within Transformer Blocks}
+\label{subsec:ffn-transformer-block}
+
+An FFN is a component of a larger Transformer block rather than an
+independent sequence-processing stage. In the formulation used by Dai
+et al., the self-attention sublayer first produces a representation with
+a residual connection, after which the FFN transforms each token
+representation and adds another residual connection
+\parencite{dai2024deepseekmoe}. Let
+\(\mathbf{h}_{1:T}^{\,l-1}\) denote the token representations entering
+block \(l\), and let \(\mathbf{u}_{1:T}^{\,l}\) denote the
+representations after its self-attention sublayer. The simplified
+computation is
+\begin{equation}
+    \mathbf{u}_{1:T}^{\,l}
+    =
+    \operatorname{SelfAtt}
+    \left(\mathbf{h}_{1:T}^{\,l-1}\right)
+    +
+    \mathbf{h}_{1:T}^{\,l-1}.
+    \label{eq:ffn-attention-residual}
+\end{equation}
+The FFN then operates on each token separately:
+\begin{equation}
+    \mathbf{h}_{t}^{\,l}
+    =
+    \operatorname{FFN}
+    \left(\mathbf{u}_{t}^{\,l}\right)
+    +
+    \mathbf{u}_{t}^{\,l}.
+    \label{eq:ffn-block-residual}
+\end{equation}
+The residual addition requires the FFN output to have the same dimension
+as its input. This is why the second FFN projection returns the
+intermediate representation to \(d_{\mathrm{model}}\) dimensions.
+
+A residual connection adds the input of a sublayer to the transformation
+computed by that sublayer. It therefore preserves a direct path for the
+incoming representation while allowing the learned transformation to
+contribute an update. The equations above follow the simplified
+formulation in Dai et al.; that paper omits layer-normalization operations
+from these equations for brevity. The equations should therefore be read
+as a description of the FFN and residual structure, not as a complete
+specification of every normalization convention used by all Transformer
+implementations \parencite{dai2024deepseekmoe}.
+
+The two sublayers have complementary roles. Self-attention explicitly
+combines information across token positions, whereas the position-wise
+FFN applies the same learned nonlinear feature transformation to each
+token. The FFN does not itself create cross-token interactions; it
+transforms the representation that is available at its input.
+
+\subsection{From Dense FFNs to Mixture-of-Experts Layers}
+\label{subsec:ffn-to-moe}
+
+The parameter count of an FFN can be substantial because both projection
+matrices scale with the model and intermediate dimensions. Cai et al.
+report that, in the 540-billion-parameter PaLM configuration discussed
+in their survey, approximately 90\% of the parameters are located in
+FFN layers. They also summarize an empirical analysis reporting lower
+active expert engagement in FFN layers than in self-attention layers
+for the particular model and task examined. These observations motivate
+the investigation of conditional computation in FFN modules, but the
+reported proportions are specific to the cited experiments and should
+not be treated as universal constants for Transformer models
+\parencite{cai2025survey}.
+
+A mixture-of-experts (MoE) layer replaces one FFN with a collection of
+\(N\) expert networks,
+\[
+    \mathcal{E}
+    =
+    \{E_1,E_2,\ldots,E_N\},
+\]
+where each expert is itself an FFN. A gating network, also called a
+router, assigns scores to the experts for each input token. In a
+linear-router formulation, the router logits for input
+\(\mathbf{x}\in\mathbb{R}^{d_{\mathrm{model}}}\) are
+\begin{equation}
+    \mathbf{q}(\mathbf{x})
+    =
+    \mathbf{W}_{r}\mathbf{x},
+    \qquad
+    \mathbf{W}_{r}
+    \in\mathbb{R}^{N\times d_{\mathrm{model}}}.
+    \label{eq:moe-router-logits}
+\end{equation}
+The logits are transformed into routing probabilities by the softmax:
+\begin{equation}
+    p_i(\mathbf{x})
+    =
+    \frac{\exp(q_i(\mathbf{x}))}
+    {\displaystyle\sum_{j=1}^{N}\exp(q_j(\mathbf{x}))},
+    \qquad
+    \sum_{i=1}^{N}p_i(\mathbf{x})=1.
+    \label{eq:moe-router-softmax}
+\end{equation}
+The probabilities are nonnegative and sum to one, so they define a
+distribution over the available experts.
+
+In a dense MoE layer, all experts are evaluated and their outputs are
+combined using their routing probabilities:
+\begin{equation}
+    \operatorname{MoE}_{\mathrm{dense}}(\mathbf{x})
+    =
+    \sum_{i=1}^{N}p_i(\mathbf{x})E_i(\mathbf{x}).
+    \label{eq:moe-dense}
+\end{equation}
+In a sparse MoE layer, only the \(K\) experts with the largest routing
+scores are evaluated. Let \(\mathcal{T}_K(\mathbf{x})\) denote the set
+of their indices. The sparse gate is
+\begin{equation}
+    g_i(\mathbf{x})
+    =
+    \begin{cases}
+        p_i(\mathbf{x}),
+        & i\in\mathcal{T}_K(\mathbf{x}),\\
+        0,
+        & i\notin\mathcal{T}_K(\mathbf{x}).
+    \end{cases}
+    \label{eq:moe-sparse-gate}
+\end{equation}
+The sparse MoE output is
+\begin{equation}
+    \operatorname{MoE}_{\mathrm{sparse}}(\mathbf{x})
+    =
+    \sum_{i=1}^{N}g_i(\mathbf{x})E_i(\mathbf{x})
+    =
+    \sum_{i\in\mathcal{T}_K(\mathbf{x})}
+    p_i(\mathbf{x})E_i(\mathbf{x}).
+    \label{eq:moe-sparse-output}
+\end{equation}
+The distinction is computational: in the sparse formulation, experts
+whose gate values are zero need not perform their FFN computation for
+that token. The linear-router formulation above follows the routing
+description in Fedus et al.; Dai et al. also describe token-to-expert
+affinity scores based on the similarity between a token representation
+and an expert centroid \parencite{fedus2022switch,dai2024deepseekmoe}.
+
+If each expert contains \(P_E\) parameters and all experts have the same
+size, the total expert parameter count is
+\begin{equation}
+    P_{\mathrm{experts,total}}
+    =
+    NP_E.
+    \label{eq:moe-total-expert-parameters}
+\end{equation}
+When \(K\) experts are active for a token, the number of active expert
+parameters is
+\begin{equation}
+    P_{\mathrm{experts,active}}
+    =
+    KP_E.
+    \label{eq:moe-active-expert-parameters}
+\end{equation}
+The ratio is therefore
+\begin{equation}
+    \frac{P_{\mathrm{experts,active}}}
+    {P_{\mathrm{experts,total}}}
+    =
+    \frac{K}{N}.
+    \label{eq:moe-active-ratio}
+\end{equation}
+These expressions concern expert parameters and exclude router
+parameters and any other shared components. They show how a sparse
+MoE layer can expose a large total pool of FFN parameters while
+activating only a subset for an individual token. The total model
+capacity and the expert computation per token are consequently
+different quantities.
+
+\subsection{Switch Routing, Expert Capacity, and Load Balancing}
+\label{subsec:ffn-switch-routing}
+
+Fedus et al. introduce the Switch Transformer as a simplified sparse
+MoE design in which each token is routed to one expert rather than to
+multiple experts. The selected expert is
+\begin{equation}
+    i^{*}
+    =
+    \operatorname*{arg\,max}_{1\leq i\leq N}
+    p_i(\mathbf{x}),
+    \label{eq:switch-top-one}
+\end{equation}
+and the output of the Switch FFN is
+\begin{equation}
+    \operatorname{SwitchFFN}(\mathbf{x})
+    =
+    p_{i^{*}}(\mathbf{x})E_{i^{*}}(\mathbf{x}).
+    \label{eq:switch-output}
+\end{equation}
+The expert output is scaled by the selected router probability. Top-1
+routing reduces the number of expert computations per token and
+simplifies token dispatch relative to a routing rule that activates
+multiple experts. Fedus et al. report that this simplification can
+preserve model quality in their experiments while reducing routing
+and communication requirements \parencite{fedus2022switch}.
+
+Sparse routing creates a finite-capacity allocation problem. Let \(M\)
+be the number of tokens presented to one MoE layer in a batch. Under
+uniform allocation across \(N\) experts, the expected number of tokens
+per expert is \(M/N\). Switch Transformer defines expert capacity as
+\begin{equation}
+    C
+    =
+    \left(\frac{M}{N}\right)c_{\mathrm{factor}},
+    \label{eq:switch-expert-capacity}
+\end{equation}
+where \(c_{\mathrm{factor}}\) is the capacity factor. A factor greater
+than one provides buffer for nonuniform routing. In an implementation,
+the resulting capacity must be represented by an admissible integer
+tensor dimension.
+
+For example, consider \(M=1024\) tokens and \(N=16\) experts. The
+uniform allocation is \(1024/16=64\) tokens per expert. With
+\(c_{\mathrm{factor}}=1.5\), the capacity is
+\[
+    C=64\times1.5=96.
+\]
+An expert can therefore accept up to 96 tokens in this example.
+If more tokens are routed to it, the excess tokens are dropped from
+that expert computation in the Switch implementation and their
+representations are passed to the next layer through the residual
+connection. A larger capacity factor reduces the risk of overflow,
+but it also allocates more buffer and can increase memory and
+computation spent on unused capacity. Capacity is therefore a
+trade-off between token overflow and resource utilization
+\parencite{fedus2022switch}.
+
+The router may not distribute tokens uniformly. To encourage a more
+balanced allocation, Switch Transformer adds an auxiliary loss to the
+main training objective. For a batch \(\mathcal{B}\) containing \(M\)
+tokens, define the fraction of tokens dispatched to expert \(i\) as
+\begin{equation}
+    f_i
+    =
+    \frac{1}{M}
+    \sum_{\mathbf{x}\in\mathcal{B}}
+    \mathbb{1}
+    \left[
+        \operatorname*{arg\,max}_{j}p_j(\mathbf{x})=i
+    \right],
+    \label{eq:switch-dispatch-fraction}
+\end{equation}
+where \(\mathbb{1}[\cdot]\) is the indicator function. Define the
+average router probability assigned to expert \(i\) as
+\begin{equation}
+    P_i
+    =
+    \frac{1}{M}
+    \sum_{\mathbf{x}\in\mathcal{B}}p_i(\mathbf{x}).
+    \label{eq:switch-router-fraction}
+\end{equation}
+The auxiliary load-balancing loss is
+\begin{equation}
+    \mathcal{L}_{\mathrm{aux}}
+    =
+    \alpha N\sum_{i=1}^{N}f_iP_i,
+    \label{eq:switch-load-balancing}
+\end{equation}
+where \(\alpha\) controls the contribution of this term to the training
+objective. The vector \(f\) records the realized dispatch frequencies,
+whereas \(P\) records the average probability mass assigned by the
+router. These quantities are not interchangeable: one describes
+discrete assignments and the other describes the router's probability
+outputs.
+
+Uniform allocation corresponds to \(f_i=P_i=1/N\) for every expert.
+Under this condition,
+\[
+    \mathcal{L}_{\mathrm{aux}}
+    =
+    \alpha N
+    \sum_{i=1}^{N}\frac{1}{N^2}
+    =
+    \alpha.
+\]
+The objective is minimized at the uniform allocation. Although the
+dispatch indicator in \(f_i\) is discrete, the probability term \(P_i\)
+depends on the softmax router outputs and supplies a differentiable
+training signal to the router. The auxiliary loss is added to the
+model's main loss; it does not replace the language-modeling
+objective \parencite{fedus2022switch}.
+
+\subsection{Fine-Grained Segmentation and Shared Experts}
+\label{subsec:ffn-deepseekmoe}
+
+A conventional sparse MoE layer may contain a limited number of
+relatively large FFN experts. Dai et al. identify two potential
+limitations of this organization. Knowledge hybridity occurs when
+one expert must process tokens associated with diverse types of
+knowledge. Knowledge redundancy occurs when different experts
+independently acquire overlapping information that is useful across
+multiple contexts. DeepSeekMoE addresses these problems through
+fine-grained expert segmentation and shared expert isolation
+\parencite{dai2024deepseekmoe}.
+
+In fine-grained expert segmentation, each original expert is divided
+into \(m\) smaller experts by reducing its intermediate dimension by
+a factor of \(m\). If the original architecture has \(N\) experts,
+each with intermediate dimension \(d_{\mathrm{ff}}\), the fine-grained
+architecture has
+\begin{equation}
+    N_{\mathrm{fine}}=mN,
+    \qquad
+    d_{\mathrm{ff,fine}}=\frac{d_{\mathrm{ff}}}{m}.
+    \label{eq:deepseek-fine-grained-dimensions}
+\end{equation}
+To preserve the dominant expert computation per token, the number of
+activated experts is increased from \(K\) to \(mK\):
+\begin{equation}
+    K_{\mathrm{fine}}=mK.
+    \label{eq:deepseek-fine-grained-topk}
+\end{equation}
+These relations assume that the intermediate dimension can be divided
+as specified and that the expert projection costs scale linearly with
+that dimension.
+
+If an original expert contains \(P_E\) projection parameters, each
+fine-grained expert contains approximately \(P_E/m\) such parameters.
+The total expert parameter count is therefore preserved:
+\begin{align}
+    P_{\mathrm{fine,total}}
+    &=
+    mN\left(\frac{P_E}{m}\right)\\
+    &=
+    NP_E.
+    \label{eq:deepseek-total-parameters}
+\end{align}
+Likewise, if the dominant computation of one original expert is
+\(C_E\), then the active expert computation is
+\begin{align}
+    C_{\mathrm{fine,active}}
+    &=
+    mK\left(\frac{C_E}{m}\right)\\
+    &=
+    KC_E.
+    \label{eq:deepseek-active-computation}
+\end{align}
+Thus, the segmentation increases the number of available experts and
+the number selected for each token while preserving the leading-order
+expert parameter count and active expert computation.
+
+The principal change is the number of possible expert combinations.
+If \(K\) experts are selected from \(N\) experts, the number of
+unordered combinations is
+\begin{equation}
+    \binom{N}{K}
+    =
+    \frac{N!}{K!(N-K)!}.
+    \label{eq:moe-combination-count}
+\end{equation}
+After segmentation, the corresponding count is
+\begin{equation}
+    \binom{mN}{mK}.
+    \label{eq:deepseek-combination-count}
+\end{equation}
+Dai et al. give the example \(N=16\) and \(K=2\), for which the
+conventional architecture permits
+\[
+    \binom{16}{2}=120
+\]
+possible combinations. With \(m=4\), the fine-grained architecture
+contains 64 experts and activates eight, giving
+\[
+    \binom{64}{8}
+    =
+    4\,426\,165\,368
+\]
+possible combinations. This is a count of possible subsets, not a
+claim that all combinations are equally likely or are observed during
+training. The larger combination space gives the router more ways to
+compose specialized expert subsets \parencite{dai2024deepseekmoe}.
+
+Fine-grained segmentation does not, by itself, eliminate redundancy
+between experts. DeepSeekMoE therefore introduces shared expert
+isolation. A designated set of \(K_s\) shared experts is activated for
+every token, while the remaining experts are routed conditionally.
+The number of routed experts is \(mN-K_s\), and the number of routed
+experts selected for each token is \(mK-K_s\). A simplified
+representation of the layer output is
+\begin{align}
+    \mathbf{h}_{t}^{\,l}
+    ={}&
+    \sum_{j=1}^{K_s}
+    E^{\mathrm{shared}}_j
+    \left(\mathbf{u}_{t}^{\,l}\right)
+    \nonumber\\
+    &+
+    \sum_{i=1}^{mN-K_s}
+    g_{i,t}
+    E^{\mathrm{routed}}_i
+    \left(\mathbf{u}_{t}^{\,l}\right)
+    +
+    \mathbf{u}_{t}^{\,l}.
+    \label{eq:deepseek-shared-routed}
+\end{align}
+The shared experts provide a common computational pathway for
+information that is useful across contexts. The routed experts can
+then specialize more strongly in input-dependent information without
+each having to reproduce all common knowledge.
+
+For the routing formulation described by Dai et al., the affinity
+between token \(t\) and expert \(i\) in layer \(l\) is computed from
+the token representation and the expert centroid
+\(\mathbf{e}_{i}^{\,l}\):
+\begin{equation}
+    s_{i,t}
+    =
+    \operatorname{Softmax}_{i}
+    \left(
+        (\mathbf{u}_{t}^{\,l})^{\top}\mathbf{e}_{i}^{\,l}
+    \right).
+    \label{eq:deepseek-centroid-affinity}
+\end{equation}
+The sparse gate retains the \(mK\) largest affinities in the
+fine-grained formulation, with shared experts handled separately.
+The centroid-affinity expression is a particular routing
+parameterization and should not be conflated with the linear router
+used in the generic Switch formulation.
+
+The DeepSeekMoE paper distinguishes balancing at the expert level
+from balancing at the device level. Let
+\[
+    N'=mN-K_s,
+    \qquad
+    K'=mK-K_s
+\]
+denote the number of routed experts and the number of routed experts
+selected for each token, respectively. For a batch of \(T\) tokens,
+the normalized dispatch fraction for routed expert \(i\) is
+\begin{equation}
+    f_i
+    =
+    \frac{N'}{K'T}
+    \sum_{t=1}^{T}
+    \mathbb{1}
+    \left(\text{token }t\text{ selects routed expert }i\right),
+    \label{eq:deepseek-expert-dispatch}
+\end{equation}
+and the average affinity assigned to that expert is
+\begin{equation}
+    P_i
+    =
+    \frac{1}{T}\sum_{t=1}^{T}s_{i,t}.
+    \label{eq:deepseek-expert-affinity}
+\end{equation}
+The expert-level balancing objective is
+\begin{equation}
+    \mathcal{L}_{\mathrm{ExpBal}}
+    =
+    \frac{\alpha_1}{N'}
+    \sum_{i=1}^{N'}f_iP_i,
+    \label{eq:deepseek-expert-balance}
+\end{equation}
+where \(\alpha_1\) controls the strength of expert-level balancing.
+The normalization in \(f_i\) makes its value equal to one under
+uniform routed-expert allocation.
+
+Balancing individual experts does not guarantee balanced accelerator
+workloads. Suppose the routed experts are partitioned into \(D\) groups,
+with group \(\mathcal{G}_d\) deployed on device \(d\). The normalized
+dispatch fraction and aggregate affinity for device group \(d\) are
+\begin{align}
+    f'_d
+    &=
+    \frac{1}{|\mathcal{G}_d|}
+    \sum_{j\in\mathcal{G}_d}f_j,
+    \label{eq:deepseek-device-dispatch}\\
+    P'_d
+    &=
+    \sum_{j\in\mathcal{G}_d}P_j.
+    \label{eq:deepseek-device-affinity}
+\end{align}
+The corresponding device-level balancing objective is
+\begin{equation}
+    \mathcal{L}_{\mathrm{DevBal}}
+    =
+    \alpha_2
+    \sum_{d=1}^{D}f'_dP'_d,
+    \label{eq:deepseek-device-balance}
+\end{equation}
+where \(\alpha_2\) is the device-level balance factor. Dai et al.
+describe using a relatively small expert-level balance factor to
+reduce routing collapse while assigning a larger weight to
+device-level balancing, because overly strict expert-level balancing
+can compromise model performance. These two objectives address
+different bottlenecks: one concerns token allocation among experts,
+and the other concerns the aggregate computational load assigned
+to devices \parencite{dai2024deepseekmoe}.
+
+Dai et al. report that DeepSeekMoE 2B achieves performance comparable
+to GShard 2.9B despite the latter having approximately 1.5 times the
+expert parameters and computation. They also report that DeepSeekMoE
+16B achieves performance comparable to LLaMA2 7B using about 40\%
+of the computation in their reported comparison. These are empirical
+results for the configurations and evaluations in that paper, rather
+than general guarantees for every fine-grained MoE design
+\parencite{dai2024deepseekmoe}.
+
+\subsection{Expert Structure, Specialization, and Practical Constraints}
+\label{subsec:ffn-expert-analysis}
+
+The presence of multiple experts does not by itself establish that
+they have learned distinct functions. Experts may acquire overlapping
+parameters or exhibit similar output behavior. Lo et al. investigate
+this issue by analyzing the projection matrices
+\(\mathbf{W}_{\mathrm{up}}\),
+\(\mathbf{W}_{\mathrm{act}}\), and
+\(\mathbf{W}_{\mathrm{down}}\) in several MoE models
+\parencite{lo2025closer}.
+
+One way to compare two parameter matrices is to flatten them into
+vectors and calculate cosine similarity. For nonzero vectors
+\(\mathbf{a},\mathbf{b}\in\mathbb{R}^{n}\), cosine similarity is
+\begin{equation}
+    \operatorname{CosSim}(\mathbf{a},\mathbf{b})
+    =
+    \frac{\mathbf{a}^{\top}\mathbf{b}}
+    {\|\mathbf{a}\|_2\|\mathbf{b}\|_2},
+    \label{eq:ffn-cosine-similarity}
+\end{equation}
+where
+\[
+    \|\mathbf{a}\|_2
+    =
+    \sqrt{\sum_{j=1}^{n}a_j^2}
+\]
+is the Euclidean norm. Cosine similarity measures angular alignment
+and is invariant to positive rescaling of either vector. It does not,
+however, measure equality of magnitudes or guarantee equality of
+the functions implemented by the corresponding networks.
+
+Flattened-matrix comparison is also sensitive to neuron ordering.
+Two experts may contain similar units in different orders, while a
+direct element-by-element comparison pairs units that do not
+correspond. Lo et al. therefore investigate neuron-level comparisons,
+including a reordering procedure based on the Jonker--Volgenant
+algorithm for a linear assignment problem. Their analysis treats a
+gated FFN neuron as the combination of the corresponding rows of
+\(\mathbf{W}_{\mathrm{up}}\) and \(\mathbf{W}_{\mathrm{act}}\), together
+with the corresponding column of \(\mathbf{W}_{\mathrm{down}}\).
+This connects the neuron decomposition in
+\cref{eq:ffn-neuron-decomposition} to a more detailed analysis of
+expert similarity \parencite{lo2025closer}.
+
+In their investigated models, Lo et al. report that matrix-level
+similarities differ across architectures and layers. For Mixtral,
+they report cosine similarities primarily in the range 0.2--0.4
+between experts, while similarities between Mixtral experts and the
+dense Mistral FFN are approximately 0.6 in the examined comparisons.
+They also report that similarities between the routed experts of
+DeepSeekMoE and the experts of Grok-1 are close to zero in their
+analysis. These observations are specific to the models, layers,
+matrices, and comparison procedures studied. They should not be
+interpreted as a universal numerical measure of expert
+specialization.
+
+The choice of expert count, expert dimension, number of active
+experts, and frequency of MoE layers also affects the architecture.
+Cai et al. identify these as important design variables and describe
+configurations in which MoE layers replace every second FFN layer,
+every fourth FFN layer, or the FFN in every layer. A larger number
+of experts can increase total parameter capacity, while a larger
+expert dimension increases the capacity and cost of each expert.
+Increasing the number of active experts changes the computation
+performed per token. These choices must therefore be considered
+together rather than optimized independently
+\parencite{cai2025survey}.
+
+The theoretical arithmetic savings of sparse FFNs do not automatically
+translate into proportional reductions in wall-clock latency. Routing
+requires score calculation and expert selection. The implementation
+must also dispatch tokens to the selected experts and combine their
+outputs. When experts are distributed across accelerators, this can
+introduce communication and synchronization costs. Zhang et al.
+review practical issues including irregular memory access,
+cross-device communication, fragmented workloads, and hardware
+underutilization. These system effects can reduce the practical
+benefit of sparse computation, particularly under latency or memory
+constraints \parencite{zhang2025moe}.
+
+The architecture must consequently balance representational capacity,
+expert specialization, routing quality, load distribution, memory
+requirements, and the communication pattern imposed by the hardware.
+An MoE layer is not efficient merely because it activates a small
+fraction of its parameters; its routing and execution mechanisms must
+also use the available computational resources effectively.
+
+\subsection{Limitations and Connection to Activation Functions}
+\label{subsec:ffn-limitations-transition}
+
+The development of FFN architectures reveals a progression from a
+shared nonlinear transformation applied to every token, through
+gated intermediate representations, to conditional computation
+over multiple FFN experts. The conventional FFN provides a
+position-wise mapping whose parameter count and arithmetic cost are
+determined by its input, intermediate, and output dimensions. Gated
+FFNs introduce an additional learned projection that modulates
+intermediate features. MoE architectures extend the same basic
+feed-forward computation by selecting a subset of expert networks
+for each token.
+
+These architectures introduce different trade-offs. Increasing the
+intermediate dimension increases the capacity and cost of a dense
+FFN. Adding a gate projection increases the parameterization and
+computation of a gated FFN. Increasing the number of MoE experts
+increases total expert capacity, but sparse execution introduces
+routing, capacity, load-balancing, and communication constraints.
+Fine-grained segmentation and shared expert isolation provide
+strategies for organizing expert parameters, but they do not remove
+the need to evaluate the quality of specialization or the practical
+cost of routing.
+
+The mathematical role of the activation function remains central
+throughout this progression. In a conventional FFN, it supplies the
+nonlinearity between the two projections. In a gated FFN, an
+activation function transforms the control projection before it is
+combined with the up-projection. In an MoE architecture, the router
+also uses a probability transformation to produce expert-selection
+weights. These operations may all involve nonlinear functions, but
+they act on different representations and serve different
+architectural purposes. The next section examines activation
+functions as mathematical operators, establishing the properties
+needed to understand their effects on feature transformations,
+gated computation, and gradient-based learning.

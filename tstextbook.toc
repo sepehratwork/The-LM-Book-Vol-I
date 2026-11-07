@@ -1,0 +1,75 @@
+\xpg@aux {}{english}
+\contentsline {part}{I\hspace {1em}Foundations and Architecture}{1}{part.1}%
+\contentsline {chapter}{\numberline {1}Introduction}{2}{chapter.1}%
+\contentsline {chapter}{\numberline {2}Architecture}{3}{chapter.2}%
+\contentsline {section}{\numberline {2.1}Tokenization}{3}{section.2.1}%
+\contentsline {subsection}{\numberline {2.1.1}From Written Text to Token Sequences}{3}{subsection.2.1.1}%
+\contentsline {subsection}{\numberline {2.1.2}From Word-Level to Subword-Level Representations}{5}{subsection.2.1.2}%
+\contentsline {subsection}{\numberline {2.1.3}Balancing Tokens and Types: The Principle of Least Effort}{6}{subsection.2.1.3}%
+\contentsline {paragraph}{The Less-is-Better model.}{7}{section*.2}%
+\contentsline {subsection}{\numberline {2.1.4}A Stochastic Framework for Tokenization}{9}{subsection.2.1.4}%
+\contentsline {subsection}{\numberline {2.1.5}Statistical and Computational Properties}{12}{subsection.2.1.5}%
+\contentsline {paragraph}{Noninjective encoding and inconsistency.}{12}{section*.3}%
+\contentsline {paragraph}{Noninjective decoding and ambiguity.}{12}{section*.4}%
+\contentsline {paragraph}{Multiplicativity and finite preimages.}{13}{section*.5}%
+\contentsline {paragraph}{Prefix monotonicity and sequential generation.}{14}{section*.6}%
+\contentsline {paragraph}{Bounded variation and sequentiality.}{14}{section*.7}%
+\contentsline {subsection}{\numberline {2.1.6}Limitations and Connection to Positional Encoding}{14}{subsection.2.1.6}%
+\contentsline {section}{\numberline {2.2}Positional Encoding}{15}{section.2.2}%
+\contentsline {subsection}{\numberline {2.2.1}Why Self-Attention Requires Positional Information}{15}{subsection.2.2.1}%
+\contentsline {subsection}{\numberline {2.2.2}Absolute Positional Encoding}{17}{subsection.2.2.2}%
+\contentsline {paragraph}{Sinusoidal positional encoding.}{17}{section*.8}%
+\contentsline {paragraph}{Learnable absolute positional encoding.}{18}{section*.9}%
+\contentsline {subsection}{\numberline {2.2.3}Combining Content and Position: Addition and Concatenation}{19}{subsection.2.2.3}%
+\contentsline {subsection}{\numberline {2.2.4}Relative Positional Encoding and Rotary Position Embedding}{20}{subsection.2.2.4}%
+\contentsline {paragraph}{Two-dimensional rotations.}{20}{section*.10}%
+\contentsline {paragraph}{Frequency-dependent rotations.}{21}{section*.11}%
+\contentsline {subsection}{\numberline {2.2.5}Long-Context Position Rescaling and Multi-Scale Positional Encoding}{21}{subsection.2.2.5}%
+\contentsline {paragraph}{Uniform positional rescaling.}{22}{section*.12}%
+\contentsline {paragraph}{Position-awareness across attention heads.}{22}{section*.13}%
+\contentsline {paragraph}{Inference procedure and computational considerations.}{23}{section*.14}%
+\contentsline {paragraph}{Experimental evaluation.}{24}{section*.15}%
+\contentsline {subsection}{\numberline {2.2.6}Limitations and Connection to the Next Architectural Components}{25}{subsection.2.2.6}%
+\contentsline {section}{\numberline {2.3}Feed-Forward Networks}{25}{section.2.3}%
+\contentsline {subsection}{\numberline {2.3.1}Position-Wise Feed-Forward Networks}{27}{subsection.2.3.1}%
+\contentsline {subsection}{\numberline {2.3.2}Parameterization and Computational Complexity}{28}{subsection.2.3.2}%
+\contentsline {subsection}{\numberline {2.3.3}Gated Feed-Forward Networks and Their Internal Units}{30}{subsection.2.3.3}%
+\contentsline {subsection}{\numberline {2.3.4}Feed-Forward Networks Within Transformer Blocks}{31}{subsection.2.3.4}%
+\contentsline {subsection}{\numberline {2.3.5}From Dense FFNs to Mixture-of-Experts Layers}{32}{subsection.2.3.5}%
+\contentsline {subsection}{\numberline {2.3.6}Switch Routing, Expert Capacity, and Load Balancing}{33}{subsection.2.3.6}%
+\contentsline {subsection}{\numberline {2.3.7}Fine-Grained Segmentation and Shared Experts}{35}{subsection.2.3.7}%
+\contentsline {subsection}{\numberline {2.3.8}Expert Structure, Specialization, and Practical Constraints}{38}{subsection.2.3.8}%
+\contentsline {subsection}{\numberline {2.3.9}Limitations and Connection to Activation Functions}{39}{subsection.2.3.9}%
+\contentsline {section}{\numberline {2.4}Activation Functions}{39}{section.2.4}%
+\contentsline {section}{\numberline {2.5}Normalization}{39}{section.2.5}%
+\contentsline {section}{\numberline {2.6}Attention Mechanisms}{39}{section.2.6}%
+\contentsline {part}{II\hspace {1em}Optimization and Scaling}{40}{part.2}%
+\contentsline {chapter}{\numberline {3}Optimization}{41}{chapter.3}%
+\contentsline {section}{\numberline {3.1}Optimization Algorithms}{41}{section.3.1}%
+\contentsline {section}{\numberline {3.2}Loss Functions}{41}{section.3.2}%
+\contentsline {section}{\numberline {3.3}Quantization}{41}{section.3.3}%
+\contentsline {section}{\numberline {3.4}Knowledge Distillation}{41}{section.3.4}%
+\contentsline {section}{\numberline {3.5}Parameter-Efficient Fine-Tuning}{41}{section.3.5}%
+\contentsline {chapter}{\numberline {4}Scaling Laws}{42}{chapter.4}%
+\contentsline {part}{III\hspace {1em}Reinforcement Learning and Neuroscience}{43}{part.3}%
+\contentsline {chapter}{\numberline {5}Reinforcement Learning}{44}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Theoretical Foundations}{44}{section.5.1}%
+\contentsline {section}{\numberline {5.2}Actor--Critic Methods}{44}{section.5.2}%
+\contentsline {section}{\numberline {5.3}Reinforcement Learning with Verifiable Rewards}{44}{section.5.3}%
+\contentsline {section}{\numberline {5.4}Group Relative Policy Optimization for Verifiable Rewards}{44}{section.5.4}%
+\contentsline {chapter}{\numberline {6}Neuroscience and Cognitive Foundations}{45}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Introduction}{45}{section.6.1}%
+\contentsline {section}{\numberline {6.2}From System 1 to System 2}{45}{section.6.2}%
+\contentsline {part}{IV\hspace {1em}Data and Training}{46}{part.4}%
+\contentsline {chapter}{\numberline {7}Training Data}{47}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Pre-Training Data}{47}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Post-Training Data}{47}{section.7.2}%
+\contentsline {chapter}{\numberline {8}Training Methods}{48}{chapter.8}%
+\contentsline {section}{\numberline {8.1}Pre-Training}{48}{section.8.1}%
+\contentsline {section}{\numberline {8.2}Post-Training}{48}{section.8.2}%
+\contentsline {section}{\numberline {8.3}Machine Unlearning}{48}{section.8.3}%
+\contentsline {part}{V\hspace {1em}Evaluation, Impact, Philosophy, and Challenges}{49}{part.5}%
+\contentsline {chapter}{\numberline {9}Evaluation}{50}{chapter.9}%
+\contentsline {chapter}{\numberline {10}Environmental Impacts}{51}{chapter.10}%
+\contentsline {chapter}{\numberline {11}Philosophy}{52}{chapter.11}%
+\contentsline {chapter}{\numberline {12}Challenges}{53}{chapter.12}%

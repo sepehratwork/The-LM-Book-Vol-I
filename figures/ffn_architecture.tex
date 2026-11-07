@@ -1,0 +1,57 @@
+% Original vector-style schematic for the FFN section.
+% This file is input inside a figure environment in
+% chapters/02_architecture/03_feed_forward.tex.
+% It uses the standard LaTeX picture environment and requires no
+% additional drawing package.
+
+\begingroup
+\setlength{\unitlength}{0.8pt}
+\begin{picture}(420,218)
+
+    % (a) Standard two-projection position-wise FFN
+    \put(0,198){\makebox(420,12)[l]{\small\textbf{(a) Standard position-wise FFN}}}
+    \put(0,168){\framebox(44,22){\(\mathbf{x}_t\)}}
+    \put(76,168){\framebox(68,22){\(\mathbf{W}_1\)}}
+    \put(176,168){\framebox(42,22){\(\phi\)}}
+    \put(248,168){\framebox(74,22){\(\mathbf{W}_2\)}}
+    \put(356,168){\framebox(44,22){\(\mathbf{y}_t\)}}
+    \put(44,179){\vector(1,0){32}}
+    \put(144,179){\vector(1,0){32}}
+    \put(218,179){\vector(1,0){30}}
+    \put(322,179){\vector(1,0){34}}
+
+    % (b) Three-projection gated FFN
+    \put(0,130){\makebox(420,12)[l]{\small\textbf{(b) Gated three-projection FFN}}}
+    \put(0,76){\framebox(44,22){\(\mathbf{x}\)}}
+    \put(82,105){\framebox(68,22){\(\mathbf{W}_{\mathrm{up}}\)}}
+    \put(82,47){\framebox(68,22){\(\mathbf{W}_{\mathrm{act}}\)}}
+    \put(174,47){\framebox(44,22){\(\sigma\)}}
+    \put(238,76){\framebox(32,22){\(\odot\)}}
+    \put(300,76){\framebox(70,22){\(\mathbf{W}_{\mathrm{down}}\)}}
+    \put(390,76){\framebox(30,22){\(E\)}}
+
+    \put(44,87){\vector(4,3){38}}
+    \put(44,87){\vector(4,-3){38}}
+    \put(150,116){\vector(3,-1){87}}
+    \put(150,58){\vector(1,0){24}}
+    \put(218,58){\vector(2,1){20}}
+    \put(270,87){\vector(1,0){30}}
+    \put(370,87){\vector(1,0){20}}
+
+    % (c) Sparse mixture of FFN experts
+    \put(0,28){\makebox(420,12)[l]{\small\textbf{(c) Sparse mixture-of-experts FFN}}}
+    \put(0,0){\framebox(40,20){\(\mathbf{x}\)}}
+    \put(60,0){\framebox(70,20){Router}}
+    \put(150,0){\framebox(55,20){Top-\(K\)}}
+    \put(225,0){\framebox(80,20){Selected FFNs}}
+    \put(325,0){\framebox(42,20){Sum}}
+    \put(387,0){\framebox(33,20){\(\mathbf{y}\)}}
+
+    \put(40,10){\vector(1,0){20}}
+    \put(130,10){\vector(1,0){20}}
+    \put(205,10){\vector(1,0){20}}
+    \put(305,10){\vector(1,0){20}}
+    \put(367,10){\vector(1,0){20}}
+
+\end{picture}
+\endgroup

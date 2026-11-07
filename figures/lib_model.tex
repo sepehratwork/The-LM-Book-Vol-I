@@ -1,0 +1,77 @@
+% ============================================================================
+% Figure: conceptual flow of the Less-is-Better (LiB) tokenizer.
+% Included from chapters/02_architecture/01_tokenizer.tex using \input.
+% This is an original schematic based on the mechanism described by Yang.
+% ============================================================================
+
+\begin{figure}[htbp]
+    \centering
+    \setlength{\fboxsep}{6pt}
+    \setlength{\fboxrule}{0.5pt}
+    \small
+
+    \begin{minipage}[c]{0.23\textwidth}
+        \centering
+        \fbox{\parbox[c][1.65cm][c]{0.80\linewidth}{
+            \centering
+            \textbf{Input corpus}\\[0.5ex]
+            Elementary\\
+            textual units
+        }}
+    \end{minipage}
+    \(\xrightarrow{\ \text{segment}\ }\)
+    \begin{minipage}[c]{0.23\textwidth}
+        \centering
+        \fbox{\parbox[c][1.65cm][c]{0.80\linewidth}{
+            \centering
+            \textbf{Segmentation}\\[0.5ex]
+            Larger-first\\
+            selection and\\
+            counterfactual evaluation
+        }}
+    \end{minipage}
+    \(\xrightarrow{\ }\)
+    \begin{minipage}[c]{0.23\textwidth}
+        \centering
+        \fbox{\parbox[c][1.65cm][c]{0.80\linewidth}{
+            \centering
+            \textbf{Output sequence}\\[0.5ex]
+            Unit tokens\\
+            from the lexicon
+        }}
+    \end{minipage}
+
+    \vspace{1.0em}
+    \[
+        \updownarrow
+        \qquad
+        \text{segmentation and vocabulary are updated together}
+        \qquad
+        \updownarrow
+    \]
+
+    \begin{minipage}[c]{0.36\textwidth}
+        \centering
+        \fbox{\parbox[c][2.15cm][c]{0.80\linewidth}{
+            \centering
+            \textbf{Memorizer}\\[0.5ex]
+            Merges adjacent units into\\
+            longer units and adds them\\
+            to the vocabulary
+        }}
+    \end{minipage}
+    \(\longleftrightarrow\)
+    \begin{minipage}[c]{0.36\textwidth}
+        \centering
+        \fbox{\parbox[c][2.15cm][c]{0.80\linewidth}{
+            \centering
+            \textbf{Forgetter}\\[0.5ex]
+            Removes infrequent or\\
+            less useful units from\\
+            the vocabulary
+        }}
+    \end{minipage}
+
+    \caption{Conceptual flow of the Less-is-Better tokenizer. The Memorizer introduces longer units, which can reduce token count while increasing vocabulary size. The Forgetter removes less useful types, reducing vocabulary size while potentially increasing the number of tokens needed for a text. Their interaction is intended to approach a relatively stable vocabulary. Original schematic based on the mechanism described by \textcite{yang2024rethinking}.}
+    \label{fig:tokenizer-lib-model}
+\end{figure}

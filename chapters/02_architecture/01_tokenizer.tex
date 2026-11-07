@@ -1,0 +1,426 @@
+% ============================================================================
+% 02_architecture/01_tokenizer.tex
+% Section body for inclusion immediately after the master file's \section.
+% Follows section_body_template.tex: no \chapter, \section, package imports,
+% document-level commands, or local bibliography command.
+% Compile the master project with XeLaTeX or LuaLaTeX.
+% ============================================================================
+
+The architecture of a language model begins with a representational question: what are the discrete units over which the model will operate? A neural network does not receive written language as an unstructured sequence of words in their ordinary typographical form. It receives a numerical representation of a sequence of discrete units. Tokenization constructs this representation by mapping character strings into sequences drawn from a vocabulary. The choice of these units affects the length of the sequences processed by the model, the size of its vocabulary, the linguistic regularities available to it, and the probability distribution that it learns to estimate. Tokenization is therefore not merely an incidental preprocessing operation; it is the first representational decision in the architecture considered in this chapter.
+
+Two complementary perspectives are needed to understand this decision. The cognitive perspective examines how the number and nature of linguistic units affect the effort required to process language. In particular, it considers the trade-off between the number of token occurrences and the number of distinct vocabulary types. The formal perspective treats a tokenizer as a pair of mappings between character strings and token sequences and asks whether these mappings preserve the statistical and computational properties required by language modeling. The former perspective motivates flexible vocabularies containing units of different sizes, while the latter establishes conditions under which a model trained over token sequences remains a sound estimator of a distribution over original texts \parencite{yang2024rethinking,gastaldi2025foundations}.
+
+\subsection{From Written Text to Token Sequences}
+\label{subsec:tokenizer-text-representation}
+
+A formal description of tokenization begins by distinguishing the elementary symbols of a text from the units selected for a model's vocabulary. Let \(\Sigma\) be a finite, nonempty alphabet of elementary symbols. Depending on the textual representation, these symbols may be characters or other elementary textual units. For each nonnegative integer \(n\), let \(\Sigma^n\) denote the set of strings containing exactly \(n\) symbols from \(\Sigma\). The set of all finite strings over the alphabet is the Kleene closure
+\begin{equation}
+    \Sigma^* = \bigcup_{n=0}^{\infty}\Sigma^n.
+    \label{eq:tokenizer-kleene-closure}
+\end{equation}
+It includes the empty string, denoted by \(\varepsilon_\Sigma\). The length of a string \(\sigma\in\Sigma^*\) is written as \(|\sigma|\). If \(\sigma_1,\sigma_2\in\Sigma^*\), their concatenation is written as \(\sigma_1\cdot\sigma_2\). Concatenation is associative and has the empty string as its identity:
+\begin{equation}
+    (\sigma_1\cdot\sigma_2)\cdot\sigma_3
+    =
+    \sigma_1\cdot(\sigma_2\cdot\sigma_3),
+    \qquad
+    \varepsilon_\Sigma\cdot\sigma
+    =
+    \sigma\cdot\varepsilon_\Sigma
+    =
+    \sigma.
+    \label{eq:tokenizer-character-concatenation}
+\end{equation}
+Thus, \(\Sigma^*\), equipped with concatenation and the empty string, is a free monoid. This structure is useful because it describes strings without imposing a particular linguistic segmentation on them \parencite{gastaldi2025foundations}.
+
+A tokenizer introduces a second set, denoted by \(\Delta\), whose elements are the units in the tokenizer's vocabulary. In contrast to \(\Sigma\), whose elements are elementary symbols, \(\Delta\) may contain units of different lengths. A vocabulary may include individual characters, subword units, complete words, and, in some designs, multiword expressions. The set of all finite sequences over this vocabulary is
+\begin{equation}
+    \Delta^* = \bigcup_{n=0}^{\infty}\Delta^n.
+    \label{eq:tokenizer-vocabulary-closure}
+\end{equation}
+An element of \(\Sigma^*\) is a character string or text, whereas an element of \(\Delta^*\) is a token sequence. The distinction is mathematical rather than hierarchical: the formal framework does not assume that characters are intrinsically more fundamental than tokens. It distinguishes the two sets because tokenization studies the mappings between them \parencite{gastaldi2025foundations}.
+
+It is also necessary to distinguish a token from a token type. A token is an occurrence of a unit in a particular tokenized text. A token type is a distinct unit that can occur in the vocabulary. If a corpus contains the word \emph{language} several times, each occurrence contributes a token, while the word itself contributes only one type. Consequently, the number of tokens measures the length of the corpus after segmentation, whereas the number of types measures the size of the set of distinct units used to represent it.
+
+Let a corpus be
+\[
+    \mathcal{C}=\{\sigma_1,\sigma_2,\ldots,\sigma_M\},
+\]
+where each \(\sigma_m\in\Sigma^*\), and let \(T\) be a deterministic tokenizer. The total number of token occurrences produced by \(T\) is
+\begin{equation}
+    N_T(\mathcal{C})
+    =
+    \sum_{m=1}^{M}|T(\sigma_m)|.
+    \label{eq:tokenizer-token-count}
+\end{equation}
+If \(\operatorname{Types}(T(\sigma_m))\) denotes the set of distinct token types appearing in the tokenization of \(\sigma_m\), the number of types observed in the corpus is
+\begin{equation}
+    V_T(\mathcal{C})
+    =
+    \left|
+    \bigcup_{m=1}^{M}\operatorname{Types}(T(\sigma_m))
+    \right|.
+    \label{eq:tokenizer-type-count}
+\end{equation}
+These quantities describe different properties of a representation. Reducing \(N_T(\mathcal{C})\) does not necessarily reduce \(V_T(\mathcal{C})\), and reducing the vocabulary size does not necessarily shorten the tokenized corpus. The tension between these objectives is central to tokenizer design \parencite{yang2024rethinking}.
+
+\subsection{From Word-Level to Subword-Level Representations}
+\label{subsec:tokenizer-representation-families}
+
+Word-level tokenization treats complete words as the primary units. In writing systems that use spaces to separate words, a tokenizer can use spaces and punctuation as practical segmentation cues. This representation is intuitive because its units often correspond to familiar lexical items. However, the vocabulary required to cover a language is not fixed. Morphological inflections, newly coined words, spelling variation, and domain-specific terminology continually introduce forms that may not have appeared in the training corpus. A word-level tokenizer must either add these forms to its vocabulary or handle them as out-of-vocabulary (OOV) items. The problem is particularly visible in languages whose writing systems do not mark word boundaries with spaces, because segmentation cannot be obtained from whitespace alone \parencite{yang2024rethinking}.
+
+Character-level tokenization takes the opposite approach. It represents a text as a sequence of elementary characters. This substantially limits the number of distinct vocabulary units and allows an unfamiliar word to be represented whenever its constituent characters are available. Its cost is sequence length: a word that would be one token under a word-level representation may require several character tokens. Longer sequences require the language model to process and predict more units. Character-level tokenization therefore reduces vocabulary complexity while increasing the number of token occurrences.
+
+Subword tokenization occupies an intermediate position. It constructs units that may be larger than individual characters but smaller than complete words. Frequently occurring character sequences can be represented as single vocabulary entries, while rare or unseen words can be decomposed into smaller units. The result is an open-vocabulary strategy: the tokenizer does not need a separate entry for every possible complete word, provided that the relevant elementary symbols and subword components can be represented.
+
+Byte Pair Encoding (BPE) is a prominent example. Its underlying pair-merging procedure originated in data compression and was adapted to subword representation. In its basic form, the corpus is initialized as sequences of small units. The algorithm repeatedly identifies frequent adjacent pairs and merges selected pairs into larger units. Repeating the operation builds a vocabulary containing units of different lengths. Frequent sequences can then be represented compactly, while less frequent forms remain expressible through smaller components. WordPiece is another subword approach. Its maximal-munch encoding procedure repeatedly selects the longest vocabulary prefix matching the remaining input. Unigram tokenization can represent a text through alternative subword segmentations; when regularization is used, different segmentations can be sampled during training. Yang also discusses SentencePiece as a language-independent subword framework, including its relevance to languages that do not use spaces as word boundaries \parencite{yang2024rethinking,gastaldi2025foundations}.
+
+The principal distinction among these approaches is not simply the length of the resulting units. Their segmentation procedures determine which sequences are valid representations, whether the encoder is deterministic or stochastic, and how many alternative token sequences may correspond to the same text. These differences become important when the tokenizer is treated as part of a probabilistic language model rather than as a stand-alone text-processing utility.
+
+Subword segmentation also does not resolve every linguistic representation problem. Multiword expressions (MWEs) are expressions composed of multiple words whose conventional meaning may not be reducible to the literal meanings of their components. The expression \emph{kick the bucket}, for example, has an idiomatic meaning that differs from its literal composition. If such an expression is represented only through its constituent words or subwords, the model must learn its conventional meaning from contextual examples. Adding an MWE as a single vocabulary unit may make its holistic meaning more directly available, but it can also increase the number of types. Rare or domain-specific MWEs may not occur often enough in training data to support a reliable representation. Yang therefore treats direct MWE representation as a vocabulary-design trade-off rather than as a rule that every multiword expression should become a token \parencite{yang2024rethinking}.
+
+\subsection{Balancing Tokens and Types: The Principle of Least Effort}
+\label{subsec:tokenizer-tokens-types-ple}
+
+The difference between token count and vocabulary size can be quantified. Yang reports a comparison on a German corpus in which word-level segmentation produces \(100\) million tokens and \(1{,}750{,}000\) types, BPE produces \(111\) million tokens and \(82{,}000\) types, and character-level segmentation produces \(550\) million tokens and \(3{,}000\) types. These values are reproduced in \cref{tab:tokenizer-german-tradeoff}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Token and type counts for three segmentation methods on the German corpus reported by Yang.}
+    \label{tab:tokenizer-german-tradeoff}
+    \begin{tabularx}{\textwidth}{Xrr}
+        \toprule
+        Segmentation method & Number of tokens & Number of types \\
+        \midrule
+        Words & \(100\) million & \(1{,}750{,}000\) \\
+        BPE & \(111\) million & \(82{,}000\) \\
+        Characters & \(550\) million & \(3{,}000\) \\
+        \bottomrule
+    \end{tabularx}
+    \par
+    \smallskip
+    \footnotesize\emph{Source:} \textcite{yang2024rethinking}, reproducing the comparison attributed there to the BPE literature.
+\end{table}
+
+The BPE vocabulary contains
+\begin{equation}
+    \frac{82{,}000}{1{,}750{,}000}
+    \approx 0.0469
+    \label{eq:tokenizer-bpe-type-ratio}
+\end{equation}
+of the word-level types, or approximately \(4.7\%\). This corresponds to a reduction of approximately \(95.3\%\) in the number of types. Its token count, however, is
+\begin{equation}
+    \frac{111}{100}=1.11
+    \label{eq:tokenizer-bpe-token-ratio}
+\end{equation}
+times the word-level count, an increase of approximately \(11\%\). Character-level segmentation reduces the vocabulary to approximately \(0.17\%\) of the word-level type count, but increases the number of tokens to \(5.5\) times the word-level count. The comparison illustrates the central compromise: word-level tokenization uses relatively few tokens but requires a large vocabulary; character-level tokenization uses a small vocabulary but creates long sequences; subword tokenization can sharply reduce the vocabulary while increasing the token count much less severely \parencite{yang2024rethinking}.
+
+The trade-off is affected by the language being represented. In morphologically rich languages, subword units can capture recurring components across inflected forms, reducing the need to store every form independently. In Chinese, the absence of whitespace word boundaries and the prevalence of compounds create different segmentation challenges. Yang notes that Chinese BPE units are often individual characters and reports that a Chinese sentence may require approximately \(1.7\) times as many tokens as a comparable English sentence, while Burmese or Amharic may require as many as ten times the number. These observations indicate that a tokenizer's efficiency depends not only on its algorithm but also on the writing system and statistical structure of the corpus \parencite{yang2024rethinking}.
+
+Yang interprets the token--type trade-off through the Principle of Least Effort (PLE). In this account, language processing involves both immediate and future effort. Fewer token occurrences reduce the burden associated with maintaining and processing units during immediate comprehension; Yang relates this burden to working memory. Fewer distinct types reduce the burden of storing and retrieving different units; this is associated with long-term memory. The two objectives can conflict: merging units into longer tokens may shorten a sequence but introduce additional vocabulary types, while removing types may require a text to be represented through more tokens.
+
+The relationship also has a qualitative connection to Minimum Description Length (MDL). In an MDL interpretation, fewer types correspond to a more compact description of the lexicon or encoder model, whereas fewer tokens correspond to a more compact description of the encoded corpus. Yang emphasizes an important distinction: the cognitive account is not simply a single global minimization of the sum of token count and type count. It treats the minimization of the two burdens as distinct processes whose interaction produces a balance. The corresponding design objectives can be written schematically as
+\begin{equation}
+    \min_T N_T(\mathcal{C})
+    \qquad\text{and}\qquad
+    \min_T V_T(\mathcal{C}),
+    \label{eq:tokenizer-two-objectives}
+\end{equation}
+with the understanding that these objectives are generally competing rather than independently attainable \parencite{yang2024rethinking}.
+
+\paragraph{The Less-is-Better model.}
+The Less-is-Better (LiB) model is Yang's proposed implementation of PLE. Its vocabulary is not restricted to a single linguistic level: it can contain subwords, words, and MWEs. The model has two interacting mechanisms, called the Memorizer and the Forgetter. It initially divides the input corpus into small units. The Memorizer repeatedly merges adjacent units into longer units and stores the resulting units in the vocabulary. Longer units can reduce the number of tokens required to represent a text, but every newly stored unit can increase the number of types. The Forgetter removes less useful vocabulary entries, including infrequent types and types whose use increases the number of tokens needed for sentences. Removing types reduces vocabulary size but can require the corresponding text to be represented by smaller units. The two mechanisms therefore act in opposite directions and are intended to approach a relatively stable vocabulary \parencite{yang2024rethinking}.
+
+The LiB paper identifies larger-first selection and counterfactual evaluation as segmentation strategies, and memorizing, re-ranking, and forgetting as vocabulary-update strategies. It does not provide a fully parameterized optimization objective, a universal update schedule, or a numerical convergence threshold in the paper considered here. The mechanism should therefore be understood as the proposed learning-and-forgetting design, not as a completely specified algorithm with a uniquely determined implementation. The interaction between corpus segmentation and vocabulary updating is summarized in \cref{fig:tokenizer-lib-model}.
+
+\input{figures/lib_model.tex}
+
+Yang reports LiB segmentations that combine units of different sizes. For example, the English input `allrightwhydon'tweputhimawaynow` is represented as `allright | whydon't | we | puthimaway | now`, rather than as the nine word-level units `all | right | why | don't | we | put | him | away | now`. The example illustrates that LiB does not impose a strict boundary between subwords, words, and multiword expressions. It searches for units that function usefully within the corpus under its learning-and-forgetting procedure \parencite{yang2024rethinking}.
+
+The reported vocabulary and average-token-length measurements are shown in \cref{tab:tokenizer-lib-vocabulary}. The BRphono average length is measured in English phonemes, while the CTB8 average length is measured in Chinese characters. The results show that LiB learns longer average units than the other listed methods in both corpora. Its vocabulary size is smaller than BPE's in BRphono, but larger than the word vocabulary; in CTB8, its vocabulary is smaller than the word vocabulary but larger than the BPE vocabulary. Thus, the measurements support a different balance between unit length and vocabulary size, rather than a claim that LiB has the smallest vocabulary under every comparison.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Average token length and vocabulary size reported for BRphono and CTB8.}
+    \label{tab:tokenizer-lib-vocabulary}
+    \small\begin{tabularx}{\textwidth}{l>{\raggedright\arraybackslash}Xrrrr}
+        \toprule
+        Corpus & Measure & Characters & BPE & Words & LiB \\
+        \midrule
+        BRphono (English) & Average token length & 1.0 & 2.8 & 2.9 & 3.6 \\
+        BRphono (English) & Vocabulary size & 50 & 5,574 & 1,321 & 1,869 \\
+        CTB8 (Chinese) & Average token length & 1.0 & 1.4 & 1.7 & 1.9 \\
+        CTB8 (Chinese) & Vocabulary size & 4,697 & 7,980 & 65,410 & 39,320 \\
+        \bottomrule
+    \end{tabularx}
+    \par
+    \smallskip
+    \footnotesize\emph{Source:} \textcite{yang2024rethinking}. Average length is measured in English phonemes for BRphono and Chinese characters for CTB8.
+\end{table}
+
+The paper also reports bits-per-character (BPC) scores from simple \(2\)-gram and \(3\)-gram language-model evaluations. If \(x\) is an evaluated character sequence containing \(N_c\) characters and \(p_\theta(x)\) is the probability assigned to it by a model, its description length per character in bits is
+\begin{equation}
+    \operatorname{BPC}(x)
+    =
+    -\frac{1}{N_c}\log_2 p_\theta(x).
+    \label{eq:tokenizer-bpc}
+\end{equation}
+A lower score indicates a shorter model-based description of the evaluated sequence. The reported results are reproduced in \cref{tab:tokenizer-lib-bpc}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Bits-per-character scores reported for \(2\)-gram and \(3\)-gram models under different tokenizations.}
+    \label{tab:tokenizer-lib-bpc}
+    \small\begin{tabularx}{\textwidth}{lXrrrr}
+        \toprule
+        Corpus & Model & Characters & BPE & Words & LiB \\
+        \midrule
+        CTB8 & \(2\)-gram & 3.558 & 2.788 & 2.333 & \textbf{2.095} \\
+        CTB8 & \(3\)-gram & 2.025 & 1.193 & 1.163 & \textbf{0.903} \\
+        BRphono & \(2\)-gram & 2.221 & 1.003 & 0.977 & \textbf{0.791} \\
+        BRphono & \(3\)-gram & 1.371 & 0.563 & 0.584 & \textbf{0.484} \\
+        \bottomrule
+    \end{tabularx}
+    \par
+    \smallskip
+    \footnotesize\emph{Source:} \textcite{yang2024rethinking}.
+\end{table}
+
+LiB obtains the lowest reported BPC in each of these four comparisons. The scope of the result must nevertheless be kept precise. Yang describes LiB as a cognitive model that was not optimized specifically for large language models; the reported language-model evaluations use simple \(2\)-gram and \(3\)-gram models. The results therefore motivate further investigation of PLE-based tokenizers, but they do not establish that LiB outperforms established tokenizers in large-scale transformer language models \parencite{yang2024rethinking}.
+
+\subsection{A Stochastic Framework for Tokenization}
+\label{subsec:tokenizer-stochastic-framework}
+
+The token--type trade-off concerns the efficiency and linguistic suitability of a representation. A separate question is whether the representation preserves the probability distribution of the original text. A language model is intended to estimate probabilities of linguistic sequences, but after tokenization it estimates probabilities over token sequences. To understand the relationship between these two distributions, Gastaldi et al. formulate tokenization through stochastic maps \parencite{gastaldi2025foundations}.
+
+A stochastic map from a countable set \(X\) to a countable set \(Y\), written \(f:X\rightsquigarrow Y\), assigns a probability distribution over \(Y\) to every input \(x\in X\). Its transition probabilities satisfy
+\begin{equation}
+    f(y\mid x)\geq 0,
+    \qquad
+    \sum_{y\in Y}f(y\mid x)=1
+    \quad\text{for every }x\in X.
+    \label{eq:tokenizer-stochastic-map}
+\end{equation}
+A deterministic function is a special case in which all probability mass for an input is concentrated on one output. The stochastic-map formulation therefore includes deterministic tokenizers as well as tokenizers that permit alternative segmentations.
+
+\begin{definition}
+\textbf{Tokenizer model.}
+A tokenizer model from \(\Sigma^*\) to \(\Delta^*\) is a pair
+\[
+    T=(\tau,\kappa),
+\]
+where
+\[
+    \tau:\Sigma^*\rightsquigarrow\Delta^*
+    \qquad\text{and}\qquad
+    \kappa:\Delta^*\rightsquigarrow\Sigma^*
+\]
+are stochastic maps. The map \(\tau\) is the encoder and the map \(\kappa\) is the decoder.
+\label{def:tokenizer-stochastic-model}
+\end{definition}
+
+The encoder and decoder are defined as composable mappings between the two string spaces. No additional relationship between the alphabet \(\Sigma\) and the vocabulary \(\Delta\) is assumed by the general definition. This breadth is deliberate: it allows the statistical consequences of the complete encoding--decoding process to be studied independently of the particular segmentation algorithm.
+
+Let \(p^*\) be a reference probability distribution over \(\Sigma^*\). Applying the encoder produces a probability distribution over token sequences, called the image or pushforward distribution:
+\begin{equation}
+    q^*=\tau p^*.
+    \label{eq:tokenizer-pushforward}
+\end{equation}
+For an individual token sequence \(\delta\in\Delta^*\), this means
+\begin{equation}
+    q^*(\delta)
+    =
+    \sum_{\sigma\in\Sigma^*}
+    \tau(\delta\mid\sigma)p^*(\sigma).
+    \label{eq:tokenizer-pushforward-pointwise}
+\end{equation}
+The language model estimates \(q^*\) from tokenized data. Let \(\{q_n\}\) be a sequence of estimators, where \(n\) indexes the amount of information used for estimation. If the estimators are consistent, then \(q_n\) converges to \(q^*\). Decoding the estimated token distribution gives
+\begin{equation}
+    p_n=\kappa q_n,
+    \qquad
+    p_n(\sigma)
+    =
+    \sum_{\delta\in\Delta^*}
+    \kappa(\sigma\mid\delta)q_n(\delta).
+    \label{eq:tokenizer-decoded-estimator}
+\end{equation}
+The target of interest is whether \(p_n\) converges to the original distribution \(p^*\), not merely whether \(q_n\) converges to the token-level distribution \(q^*\).
+
+The key mathematical property is that stochastic maps preserve consistency of estimators on the countable spaces considered by Gastaldi et al. In particular, if probability distributions \(p_n\) converge pointwise to a probability distribution \(p\), then their \(L^1\) distance converges to zero:
+\begin{equation}
+    \lim_{n\to\infty}
+    \sum_{x\in X}|p_n(x)-p(x)|=0.
+    \label{eq:tokenizer-l1-convergence}
+\end{equation}
+For a stochastic map \(f:X\rightsquigarrow Y\), the triangle inequality and the normalization in \cref{eq:tokenizer-stochastic-map} give
+\begin{align}
+    \sum_{y\in Y}|(fp_n)(y)-(fp)(y)|
+    &=
+    \sum_{y\in Y}
+    \left|
+        \sum_{x\in X}f(y\mid x)(p_n(x)-p(x))
+    \right|
+    \nonumber\\
+    &\leq
+    \sum_{y\in Y}\sum_{x\in X}
+    f(y\mid x)|p_n(x)-p(x)|
+    \nonumber\\
+    &=
+    \sum_{x\in X}|p_n(x)-p(x)|
+    \sum_{y\in Y}f(y\mid x)
+    \nonumber\\
+    &=
+    \sum_{x\in X}|p_n(x)-p(x)|.
+    \label{eq:tokenizer-stochastic-contraction}
+\end{align}
+Thus, applying a stochastic map cannot increase the \(L^1\) distance between the distributions. This contraction property explains why consistency is preserved when an estimator is transformed through a stochastic map \parencite{gastaldi2025foundations}.
+
+\begin{theorem}
+\textbf{Fundamental Principle of Tokenization.}
+Let \(p^*\) be a reference probability distribution over \(\Sigma^*\), let \(T=(\tau,\kappa)\) be a tokenizer, and let \(\{q_n\}\) be a consistent sequence of estimators of \(q^*=\tau p^*\). Then the decoded estimators \(\{\kappa q_n\}\) are consistent estimators of \(p^*\) if and only if
+\begin{equation}
+    \boxed{\kappa\tau p^*=p^*.}
+    \label{eq:tokenizer-fundamental-principle}
+\end{equation}
+\label{thm:tokenizer-fundamental-principle}
+\end{theorem}
+
+\begin{proof}
+Because \(\{q_n\}\) is consistent for \(q^*\), preservation of consistency under stochastic maps gives
+\[
+    \kappa q_n\longrightarrow\kappa q^*.
+\]
+By the definition \(q^*=\tau p^*\), the limiting distribution is
+\[
+    \kappa q^*=\kappa\tau p^*.
+\]
+The decoded estimators therefore converge to \(p^*\) exactly when their limiting distribution equals \(p^*\), which is the condition \(\kappa\tau p^*=p^*\). This proves both directions.
+\end{proof}
+
+The theorem separates two kinds of correctness. A language model may estimate the token-level distribution consistently, yet the resulting character-level estimator may still be inconsistent if the tokenizer changes the reference distribution. The condition in \cref{eq:tokenizer-fundamental-principle} is therefore a property of the tokenizer together with the target distribution; it is not guaranteed solely by successful optimization of the language model.
+
+\begin{definition}
+\textbf{Consistency and exactness.}
+A tokenizer \(T=(\tau,\kappa)\) is consistent with respect to a probability distribution \(p\) over \(\Sigma^*\) if
+\[
+    \kappa\tau p=p.
+\]
+It is exact if
+\begin{equation}
+    \kappa\tau=\operatorname{id}_{\Sigma^*},
+    \label{eq:tokenizer-exactness}
+\end{equation}
+where \(\operatorname{id}_{\Sigma^*}\) is the identity map on character strings.
+\label{def:tokenizer-exactness}
+\end{definition}
+
+Exactness implies consistency for every probability distribution over \(\Sigma^*\). The converse does not hold if consistency is established only for one particular distribution: two strings with equal probability may have their probability assignments interchanged without changing that distribution. Gastaldi et al. establish that exactness is equivalent to consistency with respect to every probability distribution over \(\Sigma^*\). They also show that, for an exact tokenizer, the decoder is deterministic on the support of the encoder. In the corresponding sense, the encoder is injective: distinct original texts cannot assign positive encoding probability to a common token sequence. This is the formal reason that lossless recovery and statistical consistency are connected \parencite{gastaldi2025foundations}.
+
+The two spaces and the statistical requirement are summarized in \cref{fig:tokenizer-mapping}. The diagram makes explicit that the model estimates a distribution in token space and that the decoder must return this estimate to the original string space without changing the target distribution.
+
+\input{figures/tokenizer_mapping.tex}
+
+\subsection{Statistical and Computational Properties}
+\label{subsec:tokenizer-statistical-computational-properties}
+
+The formal conditions above identify failure modes that can arise in actual tokenizers. Gastaldi et al. organize these concerns into statistical problems, especially inconsistency and ambiguity, and computational problems, especially finiteness and sequentiality \parencite{gastaldi2025foundations}.
+
+\paragraph{Noninjective encoding and inconsistency.}
+An encoder is noninjective when distinct character strings can be mapped to the same token sequence. For example, preprocessing operations such as lowercasing, stripping accents, removing punctuation, or standardizing whitespace can cause distinct original strings to receive identical representations. If the decoder does not retain the information removed by preprocessing, the original string cannot in general be recovered. The composition \(\kappa\tau\) is then not the identity, and the consistency condition may fail.
+
+The use of an unknown symbol can create a related problem. If multiple out-of-vocabulary symbols or strings are mapped to one distinguished unknown representation, their probability mass is combined. A decoder that has no information distinguishing the original inputs cannot generally reconstruct their separate probabilities. Including the elementary alphabet in the vocabulary can support open-vocabulary encoding, but out-of-alphabet symbols at training or inference time still require careful treatment. The relevant requirement is not merely that an input can be assigned a token; it is that the complete encoding--decoding process preserves the distinctions needed for the target distribution \parencite{gastaldi2025foundations}.
+
+\paragraph{Noninjective decoding and ambiguity.}
+A decoder is noninjective when more than one token sequence maps to the same character string. For example, if the vocabulary contains the units \texttt{t}, \texttt{h}, \texttt{e}, and \texttt{he}, the text \texttt{the} can be represented as \texttt{t | h | e} or as \texttt{t | he}. A deterministic encoder may select only one representation, while the decoder accepts both. If a language model assigns positive probability to token sequences outside the image of the encoder, the decoded text distribution can receive probability from alternative sequences. Gastaldi et al. call this effect spurious ambiguity when it arises from estimation rather than from the reference tokenization process.
+
+Softmax-based neural models are relevant here. For finite logits \(z_1,\ldots,z_K\), the softmax probability of token \(i\) is
+\begin{equation}
+    \operatorname{softmax}(z)_i
+    =
+    \frac{\exp(z_i)}
+    {\sum_{j=1}^{K}\exp(z_j)}.
+    \label{eq:tokenizer-softmax}
+\end{equation}
+Every such probability is strictly positive. Consequently, a neural model may assign positive probability to token sequences that a deterministic encoder would never produce. This can reintroduce ambiguity even when the tokenizer itself is bijective over the encoder's image.
+
+Ambiguity can also be deliberate. Stochastic tokenization and subword regularization expose a model to multiple segmentations of the same text during training. The intended benefit is to improve the handling of compositional structure, noise, and tokenization variation. Spurious ambiguity and intentional stochastic ambiguity have different origins, but both require the probability of a character string to account for all token sequences that decode to it. For a deterministic decoder, this marginal probability is
+\begin{equation}
+    p_n(\sigma)
+    =
+    \sum_{\delta:\,\kappa(\delta)=\sigma}q_n(\delta).
+    \label{eq:tokenizer-marginalization}
+\end{equation}
+For a stochastic decoder, the corresponding expression is the sum in \cref{eq:tokenizer-decoded-estimator}. The sum can be computationally demanding when the set of preimages is large or infinite \parencite{gastaldi2025foundations}.
+
+\paragraph{Multiplicativity and finite preimages.}
+A decoder is multiplicative if it respects concatenation. Writing token-sequence concatenation as \(\odot\), the condition is
+\begin{equation}
+    \kappa(\delta'\odot\delta'')
+    =
+    \kappa(\delta')\cdot\kappa(\delta'').
+    \label{eq:tokenizer-multiplicative}
+\end{equation}
+The commonly used BPE, WordPiece, and Unigram tokenizers discussed by Gastaldi et al. have multiplicative decoders. A multiplicative decoder has a trivial kernel if it maps every nonempty token sequence to a nonempty character string:
+\begin{equation}
+    \delta\neq\varepsilon_\Delta
+    \implies
+    \kappa(\delta)\neq\varepsilon_\Sigma.
+    \label{eq:tokenizer-trivial-kernel}
+\end{equation}
+A sufficient condition is that no individual vocabulary token is erased during decoding.
+
+Under multiplicativity and a trivial kernel, each token contributes at least one character to the decoded text. Therefore,
+\begin{equation}
+    \kappa(\delta)=\sigma
+    \implies
+    |\delta|\leq|\sigma|.
+    \label{eq:tokenizer-preimage-length}
+\end{equation}
+If \(|\sigma|=n\), every token sequence that decodes to \(\sigma\) has length at most \(n\). For a finite vocabulary, the number of possible sequences of these lengths is bounded by
+\begin{equation}
+    |\kappa^{-1}(\sigma)|
+    \leq
+    \sum_{i=1}^{n}|\Delta|^i,
+    \label{eq:tokenizer-preimage-bound}
+\end{equation}
+for nonempty \(\sigma\). Thus, the set of preimages is finite. The bound is exponential in the length of the text, however, so finiteness alone does not guarantee an efficient marginalization algorithm. Gastaldi et al. note that the desired computational complexity of the complete composition \(\kappa\tau\) should ideally be at most linear in the input length. For exact deterministic tokenizers such as BPE and WordPiece, the composition can be computed in linear time when the encoder and decoder themselves admit linear-time implementations, although the rigorous treatment of spurious ambiguity remains a separate challenge \parencite{gastaldi2025foundations}.
+
+\paragraph{Prefix monotonicity and sequential generation.}
+A decoder has prefix monotonicity when decoding any token prefix yields a prefix of the complete decoded text:
+\begin{equation}
+    \delta'\preceq\delta
+    \implies
+    \kappa(\delta')\preceq\kappa(\delta).
+    \label{eq:tokenizer-prefix-monotonicity}
+\end{equation}
+Here, \(\preceq\) denotes the prefix relation. Multiplicativity implies prefix monotonicity under the framework considered by Gastaldi et al. This property matters for autoregressive language models because they generate token sequences incrementally. A prefix-monotone decoder preserves the relationship between a generated token prefix and the corresponding character prefix.
+
+\paragraph{Bounded variation and sequentiality.}
+For strings \(\gamma,\gamma'\in\Gamma^*\), let \(\gamma\wedge\gamma'\) be their longest common prefix. The left distance between the strings is
+\begin{equation}
+    d_{\mathrm{L}}(\gamma,\gamma')
+    =
+    |\gamma|+|\gamma'|-2|\gamma\wedge\gamma'|.
+    \label{eq:tokenizer-left-distance}
+\end{equation}
+A function \(f:\Gamma^*\to B^*\) has bounded variation if, for every \(k\geq0\), there is a finite constant \(C_k\geq0\) such that
+\begin{equation}
+    d_{\mathrm{L}}(\gamma,\gamma')\leq k
+    \implies
+    d_{\mathrm{L}}(f(\gamma),f(\gamma'))\leq C_k.
+    \label{eq:tokenizer-bounded-variation}
+\end{equation}
+In other words, inputs that differ by a bounded amount outside their longest common prefix cannot produce outputs whose corresponding difference is arbitrarily large.
+
+Gastaldi et al. connect bounded variation with subsequential functions from formal language theory. Under the additional condition that the function preserves rational sets, bounded variation implies that the function is subsequential. A subsequential function can be implemented by a deterministic finite-state transducer with an additional output function for terminal states. Since subsequential functions are closed under composition, the encoder and decoder can be studied through the finite-state realizability of their individual mappings.
+
+WordPiece's maximal-munch procedure repeatedly selects the longest vocabulary prefix that matches the remaining input. The maximum length of vocabulary units bounds this prefix search, supporting a subsequential realization. Gastaldi et al. also discuss results that construct deterministic finite automata for BPE encoders under specific conditions on the merge rules. These connections show that a tokenizer's practical suitability depends not only on the number of tokens it produces but also on whether its mappings can be implemented through tractable sequential computation \parencite{gastaldi2025foundations}.
+
+\subsection{Limitations and Connection to Positional Encoding}
+\label{subsec:tokenizer-limitations-transition}
+
+The two perspectives developed in this section address different but complementary requirements. The Principle of Least Effort motivates a vocabulary that balances the number of token occurrences against the number of distinct types. The LiB model illustrates how memorization and forgetting can construct units of different sizes, including subwords, words, and multiword expressions. Its reported \(2\)-gram and \(3\)-gram results are encouraging within the scope of the experiments, but they do not constitute a large-scale transformer evaluation. The numerical evidence should therefore be treated as motivation for further research rather than as a universal ranking of tokenizer algorithms \parencite{yang2024rethinking}.
+
+The formal framework establishes a separate condition: a consistent estimator over token sequences yields a consistent estimator over original strings only when the tokenizer's encoder--decoder composition preserves the target distribution. Noninjective encoding can destroy distinctions between texts; noninjective decoding can create ambiguity; and marginalizing over alternative token sequences can be computationally expensive. Multiplicativity, a trivial decoder kernel, prefix monotonicity, and bounded variation provide formal tools for analyzing finiteness and sequential implementation \parencite{gastaldi2025foundations}.
+
+Tokenization consequently determines the discrete units and sequence length on which the remaining architecture operates, but it does not itself specify how the model represents the positions or order of those units. Once a text has been converted into a token sequence, the architecture must provide a representation of where each token occurs in that sequence. This is the next representational problem: positional encoding supplies information about token positions and their relationships, allowing subsequent computational layers to process not only token identities but also their order. 

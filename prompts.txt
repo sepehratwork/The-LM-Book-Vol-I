@@ -1,1 +1,26 @@
 I'm writing a book about fundamental and foundations of language models.
+
+The sections of chapters of this book are going to stem from some given papers. these sections are going to be written using all the information these papers have provided.
+the book and the papers are going to be about the foundations of language models.
+But I want these sections to have some standards which have been given below:
+- The flow of the descriptions and explanations in the section must be consistent meaning that when a concept is going to be explained or discussed, all the information needed to discuss and explain this concept must be said all the way from the beginning from the most basic and fundamental concepts which are necessary for discussing and explaining the current concept which we want to explain.
+- All the scientific analysis in terms of algorithms, statistics, linear algebra, high dimensional statistics, machine learning, deep learning, computation theory, mathematical equations, numerical calculations, numerical algebra and information theory of any mathematical term and concept which have been used must be provided.
+- All the sections must be written in a way that each section is part of a big story. And the big story is the book itself. When a section is being written it must be felt that these texts are part of a big story.
+- Only use the information which have been provided as the main structure knowledge for writing the section and where ever you are using any of the given papers, mention the reference.
+- In the given paper there might be information which are not about the topic of the current section of the book. Ignore these information if they exist in the given papers.
+- Where ever you are using a paper, refrence the paper and you can only reference the provided papers.
+- Do not use any numbering or bullet points in your paragraphs.
+- Also there have been some provided guidelines for writing the book. Make sure that you will obey them all.
+
+now with respect to the terms mentioned above and structure of the book write the following section of the book in markdown:
+
+ 02_architecture | 01_tokenizer
+ 
+ 
+ 
+ ----------------------------------------------------------------------
+ 
+ 
+ 
+Now, write the latex code of the corresponding part of the latex project using the given latex template.
+Stay loyal to the template throughout all the latex codes of the file.

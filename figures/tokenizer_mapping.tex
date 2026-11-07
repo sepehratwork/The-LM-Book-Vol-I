@@ -1,0 +1,51 @@
+% ============================================================================
+% Figure: formal mapping between character strings and token sequences.
+% Included from chapters/02_architecture/01_tokenizer.tex using \input.
+% Uses standard LaTeX boxes and mathematics; no additional package is required.
+% ============================================================================
+
+\begin{figure}[htbp]
+    \centering
+    \setlength{\fboxsep}{6pt}
+    \setlength{\fboxrule}{0.5pt}
+    \small
+    \begin{minipage}[c]{0.245\textwidth}
+        \centering
+        \fbox{\parbox[c][2.25cm][c]{0.80\linewidth}{
+            \centering
+            \textbf{Character strings}\\[0.5ex]
+            \(\Sigma^*\)\\[0.5ex]
+            Reference distribution\\
+            \(p^*\)
+        }}
+    \end{minipage}
+    \(\xrightarrow{\ \tau\ }\)
+    \begin{minipage}[c]{0.245\textwidth}
+        \centering
+        \fbox{\parbox[c][2.25cm][c]{0.80\linewidth}{
+            \centering
+            \textbf{Token sequences}\\[0.5ex]
+            \(\Delta^*\)\\[0.5ex]
+            \(q^*=\tau p^*\)\\
+            Estimated by \(q_n\)
+        }}
+    \end{minipage}
+    \(\xrightarrow{\ \kappa\ }\)
+    \begin{minipage}[c]{0.245\textwidth}
+        \centering
+        \fbox{\parbox[c][2.25cm][c]{0.80\linewidth}{
+            \centering
+            \textbf{Decoded strings}\\[0.5ex]
+            \(\Sigma^*\)\\[0.5ex]
+            \(p_n=\kappa q_n\)\\
+            Limit: \(\kappa\tau p^*\)
+        }}
+    \end{minipage}
+
+    \vspace{0.8em}
+    \[
+        \underbrace{\kappa\tau p^*=p^*}_{\text{condition for consistency}}
+    \]
+    \caption{The statistical path induced by a tokenizer. The encoder maps the reference distribution over character strings to a distribution over token sequences; the language model estimates the token-level distribution; and the decoder maps that estimate back to character space. Consistency with the original distribution requires the encoder--decoder composition to preserve \(p^*\), as established by \textcite{gastaldi2025foundations}.}
+    \label{fig:tokenizer-mapping}
+\end{figure}

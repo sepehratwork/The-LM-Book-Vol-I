@@ -1,0 +1,46 @@
+% Figure source: head-wise rescaling in Multi-Scale Positional Encoding.
+% Uses the standard LaTeX picture environment; no additional package is needed.
+
+\begin{figure}[htbp]
+    \centering
+    \setlength{\unitlength}{1mm}
+    \resizebox{\textwidth}{!}{%
+    \begin{picture}(166,72)
+        \put(1,64){\makebox(0,0)[l]{\textbf{Attention heads and positional-awareness scores}}}
+
+        \put(1,48){\framebox(37,10){Head A: high $S^P$}}
+        \put(1,32){\framebox(37,10){Head B: medium $S^P$}}
+        \put(1,16){\framebox(37,10){Head C: low $S^P$}}
+
+        \put(38,53){\vector(1,0){12}}
+        \put(38,37){\vector(1,0){12}}
+        \put(38,21){\vector(1,0){12}}
+
+        \put(50,48){\framebox(31,10){$r=1.2$}}
+        \put(50,32){\framebox(31,10){$r=1.5$}}
+        \put(50,16){\framebox(31,10){$r=1.8$}}
+
+        \put(81,53){\vector(1,0){10}}
+        \put(81,37){\vector(1,0){10}}
+        \put(81,21){\vector(1,0){10}}
+
+        \put(91,48){\framebox(35,10){$m/r_h$ in RoPE}}
+        \put(91,32){\framebox(35,10){$m/r_h$ in RoPE}}
+        \put(91,16){\framebox(35,10){$m/r_h$ in RoPE}}
+
+        \put(126,53){\line(1,-1){8}}
+        \put(126,37){\line(1,0){8}}
+        \put(126,21){\line(1,1){8}}
+        \put(136,37){\vector(1,0){8}}
+        \put(144,31){\framebox(22,12){\shortstack{Multi-scale\\attention}}}
+
+        \put(1,5){\makebox(0,0)[l]{\footnotesize Higher positional awareness receives a factor closer to one.}}
+    \end{picture}%
+    }
+    \caption{Conceptual flow of Ms-PoE. Heads are ranked by their
+    position-awareness scores and receive different rescaling factors;
+    higher-scoring heads are changed less, while lower-scoring heads
+    receive stronger positional compression. The values shown are
+    illustrative points in the interval used by \textcite{zhang2024foundmiddle}.}
+    \label{fig:pe-mspoe-headwise}
+\end{figure}

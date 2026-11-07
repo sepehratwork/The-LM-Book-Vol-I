@@ -1,76 +1,250 @@
+% ============================================================================
+% Master document: Large Language Models
+% Foundations, Architecture, Training, and Evaluation
+%
+% Project layout:
+%   tstextbook.tex
+%   tstextbook.cls
+%   bibliography.bib                 (optional)
+%   images/                          (optional artwork)
+%   chapters/
+%     01_introduction/
+%     02_architecture/
+%     03_optimization/
+%     04_scaling_law/
+%     05_reinforcement_learning/
+%     06_neuroscience/
+%     07_training_data/
+%     08_training_method/
+%     09_evaluation/
+%     10_environmental_impacts/
+%     11_philosophy/
+%     12_challenges/
+%
+% Compile with XeLaTeX or LuaLaTeX. If bibliography.bib is present, run Biber.
+% Each chapter directory and source filename follows book_structure.txt.
+%
+% Content convention:
+%   - This master file creates all \chapter and \section headings.
+%   - Included chapter files contain the body text, equations, figures,
+%     tables, citations, and any required \subsection/\subsubsection headings.
+%   - Do not repeat the corresponding \chapter or \section command inside
+%     an included file.
+% ============================================================================
+
 \documentclass{tstextbook}
+
+% ============================================================================
+% Bibliography
+% ============================================================================
+% The bibliography file is optional while the book is being written.
+\newif\ifbookhasbibliography
+\IfFileExists{bibliography.bib}
+  {\addbibresource{bibliography.bib}\bookhasbibliographytrue}
+  {\bookhasbibliographyfalse}
+
+% ============================================================================
+% Input helper
+% ============================================================================
+% Missing chapter files are reported as warnings rather than fatal errors.
+% This allows the master document to compile while the chapter files are
+% being created. Once a file exists, it is included normally.
+\newcommand{\inputchapter}[1]{%
+  \IfFileExists{#1}
+    {\input{#1}}
+    {\PackageWarningNoLine{tstextbook}{Chapter source file `#1' not found; skipped}}%
+}
 
 \begin{document}
 
-\tsbook{ΕΙΣΑΓΩΓΗ ΣΤΗΝ \\ ΕΦΑΡΜΟΣΜΕΝΗ ΓΡΑΜΜΙΚΗ ΑΛΓΕΒΡΑ \\ \vspace{10mm} Διδακτικές Σημειώσεις}
-       {Μανόλης Βάβαλης}
-       {Cover Designer}
-       {2017}
-       {xxxxx}{xxx--xx--xxxx--xx--x}{0.0}
-       {Publisher}
-       {Βόλος}
+% ============================================================================
+% Front matter
+% ============================================================================
+% Arguments:
+% title, author, cover designer, year, publication identifier, ISBN,
+% edition, publisher, place of printing.
+% Replace the author and publication metadata before publication.
+\tsbook
+  {Large Language Models:\\
+   Foundations, Architecture, Training, and Evaluation}
+  {Sepehr Kerachi}
+  {}
+  {2026}
+  {}
+  {}
+  {First Edition}
+  {}
+  {}
 
-%---------------------------------------------------------------------------
-% Chapters
-%---------------------------------------------------------------------------
+% ============================================================================
+% PART I — FOUNDATIONS AND ARCHITECTURE
+% ============================================================================
+\part{Foundations and Architecture}
 
-%---------------------------------------------------------------------------
-\chapter{Προθέρμανση}
+\chapter{Introduction}
+\label{chap:introduction}
+\inputchapter{chapters/01_introduction/01_introduction.tex}
 
-\epigraph{Η Αλίκη έσκυψε κάτω από το φράχτη και χώθηκε στην τρύπα, δίχως να σκεφτεί με ποιον τρόπο θα έβγαινε από κει μέσα.}{\textit{Η Αλίκη στην Χώρα των Θαυμάτων, Λούις Κάρολ}}
+\chapter{Architecture}
+\label{chap:architecture}
 
-\begin{summary}
-  Στο πρώτο αυτό κεφάλαιο θα προσπαθήσουμε να αποκτήσουμε μια αρχική ιδέα αναφορικά με το γενικότερο αντικείμενο της Γραμμικής Άλγεβρας, τις βασικές έννοιες και τα γενικά χαρακτηριστικά της. Η ανάπτυξη του Κεφαλαίου αυτού είναι σχετικά ασαφής. Η ελπίδα είναι να διαμορφώσουμε μια εννοιλογική βαση πάνω στην οποία θα εργαστούμε στα επόμενα κεφάλαια. Mε την διαμόρφωση της εν λόγω βάσης θα συγκεκριμενοποιήσουμε τις αναφερόμενες έννοιες και θα κατανοήσουμε το γενικότερο πλαίσιο της Γραμμικής Άλγεβρας. 
-%  Συνεπώς προτείνετε να ξαναεπισκεπτόμαστε το Κεφάλαιο αυτό στο τέλος καθενός απο τα επόμενα κεφάλαια. 
-Επιπρόσθετα θα προσπαθήσουμε να πάρουμε μια πρώτη εικόνα τόσο της χρησιμότητας όσο και της σπουδαιότητας της Γραμμικής Άλγεβρας.
-\end{summary}
+\section{Tokenization}
+\label{sec:tokenization}
+\inputchapter{chapters/02_architecture/01_tokenizer.tex}
 
-\input{chapters/01_TiEinaiGA}
+\section{Positional Encoding}
+\label{sec:positional-encoding}
+\inputchapter{chapters/02_architecture/02_positional_encoding.tex}
 
-%---------------------------------------------------------------------------
-\chapter{Η απαλοιφή του Γκάους}
+\section{Feed-Forward Networks}
+\label{sec:feed-forward-networks}
+\inputchapter{chapters/02_architecture/03_feed_forward.tex}
 
-\epigraph{Μπορείς να σκεφθείς κάποια μαθηματική έννοια η οποία είναι τόσο παλή στην διατύπωσή της που μπορεί να την διδάξεις με ευκολία στο Λύκειο, η οποία είναι τόσο χρήσιμη που χρησιμοποιείται χιλάδες ή και εκατομμύρια φορές κάθε μέρα, η οποία αποτελεί αντικείμενο μελέτης για τουλάχιστον 2000 χρόνια αλλά δεν έχει ακόμα κατανοηθεί πλήρως;}{\textit{Carl D. Meyer, NC State University}}
+\section{Activation Functions}
+\label{sec:activation-functions}
+\inputchapter{chapters/02_architecture/04_activation_function.tex}
 
-\begin{summary}
- Θα ξεκινήσουμε με τα ποιο εύκολα προς μελέτη προβλήματα τα οποία θα προσπαθήσουμε να επεκτείνουμε με διάφορους τρόπου και να τα γενικεύσουμε για τις ανάγκες μας. Θα καταλήξουμε με ένα απο τους πιό σημαντικούς επιστημονικούς αλγόριθμους την απαλοιφή του Γκάους. Η εν λόγω απαλοιφή πέρα απο την βοήθεια που θα μας προσφέρει στην πορεία μας για την θεωρητική και πρακτική μελέτη συστημάτων θα μας βοηθήσει και σε γενικότερα θέματα αλγοριθμηκά και όχι μόνον.
- 
- Για την ευκολία μας στο κεφάλαιο αυτό θα περιοριστούμε σε τετραγωνικά συστήματα. Η ονοματολογία τους προκύπτει απο την τετραγωνική τους μορφή η οποία με την σειρά τους προκύπτει απο το γεγονός ότι αφορούν $n$ εξισώσει που εμπλέκουν $n$ αγνώστους, όπου $n$ ένας οποισδήποτε θετικός ακέραιος αριθμός, συχνά αρκετά μεγάλος.
-\end{summary}
+\section{Normalization}
+\label{sec:normalization}
+\inputchapter{chapters/02_architecture/05_normalization.tex}
 
-\input{chapters/02_Gauss}
+\section{Attention Mechanisms}
+\label{sec:attention-mechanisms}
+\inputchapter{chapters/02_architecture/06_attention.tex}
 
+% ============================================================================
+% PART II — OPTIMIZATION AND SCALING
+% ============================================================================
+\part{Optimization and Scaling}
 
+\chapter{Optimization}
+\label{chap:optimization}
 
-%---------------------------------------------------------------------------
-\chapter{Διανύσματα, Πίνακες και Πράξεις}
+\section{Optimization Algorithms}
+\label{sec:optimization-algorithms}
+\inputchapter{chapters/03_optimization/01_algorithm.tex}
 
-\epigraph{Unfortunately, no one can be told what the Matrix is. You have to see it for yourself.}{\textit{Morpheus to Neo, The Matrix}}
+\section{Loss Functions}
+\label{sec:loss-functions}
+\inputchapter{chapters/03_optimization/02_loss_function.tex}
 
-\begin{summary}
-  \blindtext
-\end{summary}
+\section{Quantization}
+\label{sec:quantization}
+\inputchapter{chapters/03_optimization/03_quantization.tex}
 
-\section{First section}
-\Blindtext
+\section{Knowledge Distillation}
+\label{sec:knowledge-distillation}
+\inputchapter{chapters/03_optimization/04_distillation.tex}
 
-\section{Second section}
-\Blindtext
+\section{Parameter-Efficient Fine-Tuning}
+\label{sec:parameter-efficient-fine-tuning}
+\inputchapter{chapters/03_optimization/05_peft.tex}
 
-\section{Third section}
-\Blindtext
+\chapter{Scaling Laws}
+\label{chap:scaling-laws}
+\inputchapter{chapters/04_scaling_law/01_scaling_law.tex}
 
-%---------------------------------------------------------------------------
-% Bibliography
-%---------------------------------------------------------------------------
+% ============================================================================
+% PART III — REINFORCEMENT LEARNING AND NEUROSCIENCE
+% ============================================================================
+\part{Reinforcement Learning and Neuroscience}
 
-% \addcontentsline{toc}{chapter}{\textcolor{tssteelblue}{Literature}}
-% \printbibliography{}
+\chapter{Reinforcement Learning}
+\label{chap:reinforcement-learning}
 
-%---------------------------------------------------------------------------
-% Index
-%---------------------------------------------------------------------------
+\section{Theoretical Foundations}
+\label{sec:reinforcement-learning-theory}
+\inputchapter{chapters/05_reinforcement_learning/01_theory.tex}
 
-\printindex
+\section{Actor--Critic Methods}
+\label{sec:actor-critic-methods}
+\inputchapter{chapters/05_reinforcement_learning/02_actor_critics.tex}
+
+\section{Reinforcement Learning with Verifiable Rewards}
+\label{sec:reinforcement-learning-with-verifiable-rewards}
+\inputchapter{chapters/05_reinforcement_learning/03_rlvr.tex}
+
+\section{Group Relative Policy Optimization for Verifiable Rewards}
+\label{sec:grpo-for-verifiable-rewards}
+\inputchapter{chapters/05_reinforcement_learning/04_rlvr_grpo.tex}
+
+\chapter{Neuroscience and Cognitive Foundations}
+\label{chap:neuroscience}
+
+\section{Introduction}
+\label{sec:neuroscience-introduction}
+\inputchapter{chapters/06_neuroscience/01_introduction.tex}
+
+\section{From System 1 to System 2}
+\label{sec:system-one-to-system-two}
+\inputchapter{chapters/06_neuroscience/02_from_system1_to_system2.tex}
+
+% ============================================================================
+% PART IV — DATA AND TRAINING
+% ============================================================================
+\part{Data and Training}
+
+\chapter{Training Data}
+\label{chap:training-data}
+
+\section{Pre-Training Data}
+\label{sec:pre-training-data}
+\inputchapter{chapters/07_training_data/01_pre_train.tex}
+
+\section{Post-Training Data}
+\label{sec:post-training-data}
+\inputchapter{chapters/07_training_data/02_post_train.tex}
+
+\chapter{Training Methods}
+\label{chap:training-methods}
+
+\section{Pre-Training}
+\label{sec:pre-training-methods}
+\inputchapter{chapters/08_training_method/01_pre_train.tex}
+
+\section{Post-Training}
+\label{sec:post-training-methods}
+\inputchapter{chapters/08_training_method/02_post_train.tex}
+
+\section{Machine Unlearning}
+\label{sec:machine-unlearning}
+\inputchapter{chapters/08_training_method/03_unlearning.tex}
+
+% ============================================================================
+% PART V — EVALUATION, IMPACT, PHILOSOPHY, AND CHALLENGES
+% ============================================================================
+\part{Evaluation, Impact, Philosophy, and Challenges}
+
+\chapter{Evaluation}
+\label{chap:evaluation}
+\inputchapter{chapters/09_evaluation/01_benchmarks.tex}
+
+\chapter{Environmental Impacts}
+\label{chap:environmental-impacts}
+\inputchapter{chapters/10_environmental_impacts/01_environmental_impacts.tex}
+
+\chapter{Philosophy}
+\label{chap:philosophy}
+\inputchapter{chapters/11_philosophy/01_philosophy.tex}
+
+\chapter{Challenges}
+\label{chap:challenges}
+\inputchapter{chapters/12_challenges/01_challenges.tex}
+
+% ============================================================================
+% BACK MATTER
+% ============================================================================
+\cleardoublepage
+
+\ifbookhasbibliography
+  \printbibliography[heading=bibintoc,title={References}]
+\fi
+
+% makeindex creates <jobname>.ind. Skip the index until that file exists.
+\IfFileExists{\jobname.ind}{%
+  \cleardoublepage
+  \addcontentsline{toc}{chapter}{Index}
+  \printindex
+}{}
 
 \end{document}

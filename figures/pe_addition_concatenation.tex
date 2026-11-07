@@ -1,0 +1,34 @@
+% Figure source: addition and concatenation of token and positional vectors.
+% Uses the standard LaTeX picture environment; no additional package is needed.
+
+\begin{figure}[htbp]
+    \centering
+    \setlength{\unitlength}{1mm}
+    \resizebox{\textwidth}{!}{%
+    \begin{picture}(174,64)
+        \put(0,59){\makebox(0,0)[l]{\textbf{Addition}}}
+        \put(0,42){\framebox(29,10){\shortstack{Token embedding\\$\mathbf{x}_i\in\mathbb{R}^{d}$}}}
+        \put(0,15){\framebox(29,10){\shortstack{Position vector\\$\mathbf{p}_i\in\mathbb{R}^{d}$}}}
+        \put(29,47){\line(1,-1){11}}
+        \put(29,20){\line(1,1){11}}
+        \put(43,33){\makebox(0,0){\Large \(+\)}}
+        \put(47,33){\vector(1,0){11}}
+        \put(58,27){\framebox(35,12){\shortstack{Combined vector\\$\mathbf{x}_i+\mathbf{p}_i$}}}
+
+        \put(104,59){\makebox(0,0)[l]{\textbf{Concatenation}}}
+        \put(104,42){\framebox(27,10){\shortstack{Content\\$\mathbf{x}'_i$}}}
+        \put(104,15){\framebox(27,10){\shortstack{Position\\$\mathbf{p}'_i$}}}
+        \put(131,47){\line(1,-1){10}}
+        \put(131,20){\line(1,1){10}}
+        \put(144,33){\makebox(0,0){\Large \(\oplus\)}}
+        \put(148,33){\vector(1,0){8}}
+        \put(156,27){\framebox(18,12){\shortstack{Joined\\vector}}}
+    \end{picture}%
+    }
+    \caption{Two ways of incorporating positional information into token
+    representations. Addition superimposes full-dimensional vectors,
+    whereas concatenation joins half-dimensional content and positional
+    components while retaining the same total dimension. Adapted
+    conceptually from the comparison in \textcite{zhou2024rethinking}.}
+    \label{fig:pe-addition-concatenation}
+\end{figure}
