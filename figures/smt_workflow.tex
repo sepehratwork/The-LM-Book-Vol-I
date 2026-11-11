@@ -1,0 +1,23 @@
+% Original conceptual workflow; uses the standard LaTeX picture environment.
+\setlength{\unitlength}{1mm}
+\begin{picture}(150,58)
+  \put(2,35){\framebox(25,13){\shortstack{\scriptsize Pretrained\\\scriptsize model + data}}}
+  \put(31,35){\framebox(25,13){\shortstack{\scriptsize Warm-up\\\scriptsize backpropagation}}}
+  \put(60,35){\framebox(25,13){\shortstack{\scriptsize Accumulate\\\scriptsize gradients}}}
+  \put(89,35){\framebox(25,13){\shortstack{\scriptsize Score each\\\scriptsize submatrix}}}
+  \put(118,35){\framebox(28,13){\shortstack{\scriptsize Select top\\\scriptsize blocks}}}
+  \put(27,41){\vector(1,0){4}}
+  \put(56,41){\vector(1,0){4}}
+  \put(85,41){\vector(1,0){4}}
+  \put(114,41){\vector(1,0){4}}
+
+  \put(118,12){\framebox(28,13){\shortstack{\scriptsize Partial weight\\\scriptsize gradients}}}
+  \put(89,12){\framebox(25,13){\shortstack{\scriptsize Update selected\\\scriptsize blocks only}}}
+  \put(60,12){\framebox(25,13){\shortstack{\scriptsize Frozen base\\\scriptsize parameters}}}
+  \put(132,35){\line(0,-1){10}}
+  \put(132,25){\vector(0,-1){3}}
+  \put(118,18){\vector(-1,0){4}}
+  \put(89,18){\vector(-1,0){4}}
+  \put(60,18){\vector(-1,0){4}}
+  \put(2,4){\makebox(144,5){\scriptsize Warm-up selects the blocks; subsequent training avoids unselected weight gradients.}}
+\end{picture}

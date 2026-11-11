@@ -1,0 +1,1121 @@
+% ============================================================================
+% 03_optimization / 04_distillation
+% Section-body file: included immediately after the section heading in the
+% master document.  It intentionally contains no document-level commands,
+% package imports, chapter heading, section heading, or bibliography command.
+% ============================================================================
+
+The preceding discussion of optimization established how a language model
+learns a predictive function by adjusting its parameters against a training
+objective.  That formulation, however, leaves an important deployment
+question unresolved.  A model may achieve strong predictive performance and
+yet remain too expensive to store, execute, or serve at scale.  Increasing
+model capacity can improve the quality of the learned distribution, but it
+also increases parameter memory, arithmetic operations, inference latency,
+and the resources required to serve long sequences.  The optimization problem
+therefore has a second dimension: how can the information acquired by a
+computationally expensive model be transferred to a model whose execution is
+less demanding?
+
+Knowledge distillation addresses this question by training a \emph{student}
+model under the guidance of a \emph{teacher} model.  The teacher is usually
+larger or more capable, while the student is designed to have lower storage
+and inference costs.  The objective is not necessarily to copy the teacher's
+parameters or architecture.  Instead, the student is trained to reproduce
+selected aspects of the teacher's behavior, such as its output probability
+distributions, intermediate representations, generated responses, or
+reasoning traces.  The information made available by the teacher and the
+student's ability to absorb it determine the form of the distillation
+objective.  Knowledge distillation is consequently a family of optimization
+procedures rather than a single loss function.  This characterization is
+consistent with the LLM distillation surveys
+\parencite{Yang2024SurveyKD,Fang2026KnowledgeDatasetDistillation}.
+
+The distinction between model compression and knowledge transfer is central
+to this chapter.  A smaller parameter count does not by itself guarantee that
+the student retains the teacher's useful behavior.  The student must learn a
+suitable approximation from finite data and within a finite optimization
+budget.  The following development begins with the probability distributions
+produced by autoregressive language models, establishes the mathematical
+relationship between those distributions, and then examines the different
+interfaces through which a teacher can supervise a student.
+
+\subsection{Predictive distributions and the mathematical objective of distillation}
+\label{subsec:distillation-probabilistic-foundation}
+
+An autoregressive language model predicts a distribution over the next token
+conditioned on the tokens already observed.  Let the vocabulary be
+\(\mathcal V=\{v_1,\ldots,v_C\}\), where \(C\) is the vocabulary
+size.  At position \(t\), the context is
+\(c_t=x_{<t}=(x_1,\ldots,x_{t-1})\).  A model with parameters
+\(\theta\) maps this context to a logit vector
+\begin{equation}
+    \mathbf z_\theta(c_t)
+    =\bigl(z_{\theta,1}(c_t),\ldots,z_{\theta,C}(c_t)\bigr)^{\mathsf T}
+    \in\mathbb R^C.
+    \label{eq:distillation-logit-vector}
+\end{equation}
+The logits are unrestricted real-valued scores; they are not probabilities
+and need not sum to one.  The softmax transformation converts them into a
+categorical probability distribution:
+\begin{equation}
+    p_\theta(v_i\mid c_t)
+    =\frac{\exp(z_{\theta,i}(c_t))}
+    {\displaystyle\sum_{j=1}^{C}\exp(z_{\theta,j}(c_t))}.
+    \label{eq:distillation-softmax}
+\end{equation}
+The resulting probability vector belongs to the probability simplex
+\begin{equation}
+    \Delta^{C-1}
+    =\left\{\mathbf p\in\mathbb R^C:
+    p_i\geq 0,\;\sum_{i=1}^{C}p_i=1\right\}.
+    \label{eq:distillation-simplex}
+\end{equation}
+
+For a sequence \(\mathbf x=(x_1,\ldots,x_T)\), the autoregressive
+factorization gives
+\begin{equation}
+    P_\theta(\mathbf x)
+    =\prod_{t=1}^{T}P_\theta(x_t\mid x_{<t}).
+    \label{eq:distillation-autoregressive-factorization}
+\end{equation}
+Taking the negative logarithm converts the product into a sum.  The
+next-token negative log-likelihood (NLL) objective is therefore
+\begin{equation}
+    \mathcal L_{\mathrm{LM}}(\theta)
+    =-\frac{1}{T}\sum_{t=1}^{T}
+    \log P_\theta(x_t\mid x_{<t}).
+    \label{eq:distillation-nll}
+\end{equation}
+This is also the token-averaged cross-entropy between the empirical target
+and the model prediction.  To see this, let \(\mathbf e_{x_t}\) be the
+one-hot vector whose component corresponding to the observed token is one.
+Then
+\begin{equation}
+    \mathcal L_{\mathrm{NLL}}^{(t)}
+    =-\sum_{i=1}^{C}e_{x_t,i}
+    \log p_\theta(v_i\mid c_t)
+    =-\log p_\theta(x_t\mid c_t).
+    \label{eq:distillation-one-hot-ce}
+\end{equation}
+A one-hot target identifies the observed token, but it does not directly
+express how plausible the model considers the other vocabulary items.  A
+teacher's full predictive distribution contains this additional information.
+For example, suppose the observed token is \(v_1\) and the teacher's
+probability vector is
+\begin{equation}
+    \mathbf p_T=(0.70,0.20,0.08,0.02)^{\mathsf T}.
+    \label{eq:distillation-dark-knowledge-example}
+\end{equation}
+The distribution communicates not only that \(v_1\) is preferred, but
+also that \(v_2\) is considered more plausible than \(v_3\), and
+\(v_3\) more plausible than \(v_4\).  These relative preferences
+among alternatives are commonly called the teacher's
+\emph{dark knowledge} in the distillation literature
+\parencite{Yang2024SurveyKD,Fang2026KnowledgeDatasetDistillation}.
+
+The uncertainty represented by a categorical distribution can be quantified
+using Shannon entropy.  For a probability vector \(\mathbf p\),
+\begin{equation}
+    H(\mathbf p)=-\sum_{i=1}^{C}p_i\log p_i.
+    \label{eq:distillation-entropy}
+\end{equation}
+A distribution concentrated on one category has low entropy, whereas the
+uniform distribution has entropy \(\log C\).  Thus, teacher predictions
+with the same most probable token can still convey different information
+when their probability mass is distributed differently across the remaining
+vocabulary.  Distillation uses this richer distribution as a learning target
+rather than reducing teacher behavior to its top prediction.
+
+Let \(\mathbf p_T(\cdot\mid c)\) and
+\(\mathbf p_S(\cdot\mid c)\) denote teacher and student distributions
+at the same context.  Their cross-entropy is
+\begin{equation}
+    H(\mathbf p_T,\mathbf p_S)
+    =-\sum_{i=1}^{C}p_{T,i}\log p_{S,i},
+    \label{eq:distillation-cross-entropy}
+\end{equation}
+whereas their Kullback--Leibler (KL) divergence is
+\begin{equation}
+    D_{\mathrm{KL}}(\mathbf p_T\Vert\mathbf p_S)
+    =\sum_{i=1}^{C}p_{T,i}
+    \log\frac{p_{T,i}}{p_{S,i}}.
+    \label{eq:distillation-forward-kl}
+\end{equation}
+Expanding the logarithm gives
+\begin{align}
+    D_{\mathrm{KL}}(\mathbf p_T\Vert\mathbf p_S)
+    &=\sum_i p_{T,i}\log p_{T,i}
+      -\sum_i p_{T,i}\log p_{S,i}\nonumber\\
+    &=-H(\mathbf p_T)+H(\mathbf p_T,\mathbf p_S).
+    \label{eq:distillation-kl-cross-entropy-identity}
+\end{align}
+Consequently,
+\begin{equation}
+    H(\mathbf p_T,\mathbf p_S)
+    =H(\mathbf p_T)+D_{\mathrm{KL}}(\mathbf p_T\Vert\mathbf p_S).
+    \label{eq:distillation-ce-kl-identity}
+\end{equation}
+When the teacher is fixed, \(H(\mathbf p_T)\) is constant with respect
+to the student parameters.  Minimizing cross-entropy against the teacher is
+therefore equivalent to minimizing forward KL divergence.  KL divergence is
+nonnegative and is zero if the two distributions agree, subject to the usual
+support conditions.  It is not symmetric: in general,
+\(D_{\mathrm{KL}}(P\Vert Q)\neq D_{\mathrm{KL}}(Q\Vert P)\).
+
+This asymmetry changes the approximation favored when the student cannot
+represent the teacher distribution exactly.  Forward KL,
+\(D_{\mathrm{KL}}(\mathbf p_T\Vert\mathbf p_S)\), weights the
+alternatives according to teacher probability and penalizes the student for
+failing to cover teacher-supported alternatives.  Reverse KL,
+\(D_{\mathrm{KL}}(\mathbf p_S\Vert\mathbf p_T)\), weights the
+alternatives according to student probability and penalizes student mass on
+alternatives that the teacher considers unlikely.  In a multimodal target and
+a restricted student family, the two objectives can favor different
+approximations.  The Jensen--Shannon divergence provides a symmetric
+alternative.  With
+\(\mathbf m=(\mathbf p_T+\mathbf p_S)/2\), it is defined as
+\begin{equation}
+    D_{\mathrm{JS}}(\mathbf p_T\Vert\mathbf p_S)
+    =\frac{1}{2}D_{\mathrm{KL}}(\mathbf p_T\Vert\mathbf m)
+    +\frac{1}{2}D_{\mathrm{KL}}(\mathbf p_S\Vert\mathbf m).
+    \label{eq:distillation-js}
+\end{equation}
+The divergence is symmetric and bounded.  The choice of discrepancy is thus
+part of the optimization design, not a notational variation
+\parencite{Song2026OnPolicyDistillation}.
+
+\paragraph{Temperature-scaled targets.}
+The teacher's original distribution may be sharply concentrated.  Temperature
+scaling changes its concentration by dividing logits by a positive parameter
+\(\tau\) before applying softmax:
+\begin{equation}
+    p_{T,i}^{(\tau)}
+    =\frac{\exp(z_{T,i}/\tau)}
+    {\displaystyle\sum_{j=1}^{C}\exp(z_{T,j}/\tau)},
+    \qquad
+    p_{S,i}^{(\tau)}
+    =\frac{\exp(z_{S,i}/\tau)}
+    {\displaystyle\sum_{j=1}^{C}\exp(z_{S,j}/\tau)}.
+    \label{eq:distillation-temperature-softmax}
+\end{equation}
+For \(0<\tau<1\), differences between logits are amplified relative to
+the temperature and the distribution becomes sharper.  For \(\tau>1\),
+the distribution becomes smoother.  At \(\tau=1\), the original softmax
+is recovered.  If the maximum logit is unique,
+\begin{equation}
+    \lim_{\tau\to 0^+}p_{T,i}^{(\tau)}
+    =\begin{cases}
+        1,&i=\arg\max_j z_{T,j},\\
+        0,&\text{otherwise},
+    \end{cases}
+    \qquad
+    \lim_{\tau\to\infty}p_{T,i}^{(\tau)}=\frac{1}{C}.
+    \label{eq:distillation-temperature-limits}
+\end{equation}
+Temperature therefore controls how much of the teacher's relative preference
+among nonmaximal alternatives is exposed to the student.
+
+For the temperature-scaled cross-entropy
+\begin{equation}
+    \mathcal L_{\mathrm{KD}}^{(\tau)}
+    =-\sum_{i=1}^{C}p_{T,i}^{(\tau)}
+    \log p_{S,i}^{(\tau)},
+    \label{eq:distillation-temperature-ce}
+\end{equation}
+differentiation with respect to a student logit gives
+\begin{equation}
+    \frac{\partial\mathcal L_{\mathrm{KD}}^{(\tau)}}
+    {\partial z_{S,j}}
+    =\frac{1}{\tau}
+    \left(p_{S,j}^{(\tau)}-p_{T,j}^{(\tau)}\right).
+    \label{eq:distillation-temperature-gradient}
+\end{equation}
+In the high-temperature regime, the difference between the softened
+probabilities is itself approximately proportional to \(1/\tau\).  The
+unscaled gradient can therefore shrink approximately as \(1/\tau^2\).
+A conventional formulation compensates for this scale change by multiplying
+the KL term by \(\tau^2\):
+\begin{equation}
+    \mathcal L_{\mathrm{KD}}
+    =\tau^2D_{\mathrm{KL}}
+    \left(\mathbf p_T^{(\tau)}\Vert
+    \mathbf p_S^{(\tau)}\right).
+    \label{eq:distillation-temperature-scaled-kl}
+\end{equation}
+The factor is a gradient-scale compensation, not a requirement that every
+distillation implementation must use the same temperature convention.  The
+temperature also controls the dispersion of the transferred distribution and
+is discussed in Bayesian interpretations of distillation
+\parencite{Fang2026KnowledgeDatasetDistillation,Yang2024SurveyKD}.
+
+\paragraph{The optimization objective.}
+Let \(f_T(c;\theta_T)\) and \(f_S(c;\theta_S)\) denote teacher and
+student logits.  In conventional distillation, the teacher parameters
+\(\theta_T\) are fixed and the student parameters \(\theta_S\) are
+optimized.  For a context distribution \(\mathcal D\), the basic
+logits-based objective is
+\begin{equation}
+    \theta_S^*
+    =\arg\min_{\theta_S}
+    \mathbb E_{c\sim\mathcal D}
+    \left[
+      D_{\mathrm{KL}}\left(
+      \mathbf p_T^{(\tau)}(\cdot\mid c)
+      \Vert
+      \mathbf p_S^{(\tau)}(\cdot\mid c;\theta_S)
+      \right)
+    \right].
+    \label{eq:distillation-basic-objective}
+\end{equation}
+The teacher provides a target distribution; the student receives gradients
+through its own predictions.  Distillation does not replace gradient-based
+optimization.  It changes the information that defines the target of that
+optimization.
+
+The original next-token target can be retained because a teacher may be
+incorrect, biased, or poorly calibrated.  A common combined objective is
+\begin{equation}
+    \mathcal L_{\mathrm{total}}
+    =(1-\alpha)\mathcal L_{\mathrm{LM}}
+    +\alpha\mathcal L_{\mathrm{KD}},
+    \qquad 0\leq\alpha\leq 1,
+    \label{eq:distillation-combined-objective}
+\end{equation}
+where \(\alpha\) controls the relative contribution of the original
+language-modeling target and teacher supervision.  At \(\alpha=0\), the
+student is trained only on the observed tokens; at \(\alpha=1\), the
+specified objective uses only the distillation term.  Intermediate values
+combine both sources of supervision.  This formulation is the basis for the
+pre-training distillation experiments discussed later
+\parencite{Peng2024PretrainingDistillation}.
+
+\subsection{Knowledge interfaces: white-box and black-box distillation}
+\label{subsec:distillation-knowledge-interfaces}
+
+The output distribution is only one possible representation of a teacher's
+knowledge.  A language model's predictive behavior is produced by a sequence
+of internal transformations, and information relevant to the final prediction
+is distributed across its hidden states, attention computations, and output
+layer.  The form of distillation is therefore constrained by which parts of
+the teacher are accessible.  The survey by \textcite{Yang2024SurveyKD}
+distinguishes white-box methods, which can access internal model information,
+from black-box methods, which rely on observable outputs such as generated
+text.
+
+\paragraph{Logits-based white-box distillation.}
+Logits-based distillation transfers the teacher's final vocabulary
+probabilities or logits.  At each token position, the student is trained to
+minimize a discrepancy such as the forward KL divergence in
+\cref{eq:distillation-basic-objective}.  It provides information about the
+teacher's relative preferences over alternative tokens without requiring
+the student to reproduce the teacher's hidden-state dimensions or layer
+structure.  Its limitation is that supervision is applied at the output
+interface.  Different internal computations can produce similar output
+distributions, so output matching alone does not force the student to
+reproduce the teacher's intermediate representations.
+
+\paragraph{Hint-based and representation distillation.}
+Hint-based methods add supervision at intermediate layers.  Let the teacher
+hidden representation at a selected layer be
+\(H_T^{(l)}\in\mathbb R^{T\times d_T}\), and let the corresponding
+student representation be
+\(H_S^{(k)}\in\mathbb R^{T\times d_S}\).  The sequence length is
+\(T\), while \(d_T\) and \(d_S\) are the teacher and student hidden
+widths.  Since the dimensions and layer counts need not agree, a projection
+\(\phi:\mathbb R^{d_S}\to\mathbb R^{d_T}\) can map the student
+features into the teacher feature space.  A squared-error feature objective
+is
+\begin{equation}
+    \mathcal L_{\mathrm{feat}}
+    =\frac{1}{T d_T}
+    \left\|H_T^{(l)}-\phi(H_S^{(k)})\right\|_F^2,
+    \label{eq:distillation-feature-loss}
+\end{equation}
+where the squared Frobenius norm is the sum of squared entries of a matrix.  This
+objective aligns selected representations, but it also imposes an
+architectural correspondence that must be chosen carefully.  Matching
+identically indexed layers is not automatically appropriate when teacher
+and student depths differ.
+
+Patient knowledge distillation uses several teacher layers rather than
+only the final layer.  TinyBERT aligns several
+levels of the Transformer computation, including embedding outputs, hidden
+states, and attention-related representations.  MiniLM focuses on relations
+encoded by self-attention computations, allowing transfer through attention
+relationships rather than requiring every hidden coordinate to match.  These
+methods illustrate that representation transfer can be designed around the
+structures that are most useful to preserve, but retaining intermediate
+activations increases memory and computation during teacher inference
+\parencite{Yang2024SurveyKD}.
+
+\paragraph{Black-box distillation through generated text.}
+A black-box teacher exposes responses but not necessarily its logits,
+parameters, or intermediate activations.  The student must then learn from
+examples generated by the teacher.  In-context learning distillation uses a
+task instruction and a set of demonstrations.  Let
+\(D_K=\{(x_i,y_i)\}_{i=1}^{K}\) be the demonstrations and let
+\(I\) be the instruction.  The teacher generates a response according to
+\begin{equation}
+    \widehat y
+    =T\left(I,(x_1,y_1),\ldots,(x_K,y_K),x_{K+1}\right).
+    \label{eq:distillation-icl-generation}
+\end{equation}
+The generated input--output examples are subsequently used to fine-tune the
+student.  The student is thereby trained on demonstrations of how the teacher
+responds to instructions and contextual examples, without requiring access
+to the teacher's internal probability distribution.
+
+Chain-of-thought distillation extends the target from a final answer to an
+intermediate rationale and a final answer.  Let \(r_i\) be a teacher-generated
+rationale for input \(x_i\), and let \(y_i\) be its final answer.  The student
+can be trained to model the joint conditional sequence:
+\begin{equation}
+    \mathcal L_{\mathrm{CoT}}
+    =-\frac{1}{N}\sum_{i=1}^{N}
+    \log P_{\theta_S}(r_i,y_i\mid x_i).
+    \label{eq:distillation-cot-loss}
+\end{equation}
+For an autoregressive model, the joint probability factorizes into the
+conditional probabilities of the rationale tokens followed by the answer
+tokens.  Rationale supervision therefore teaches an intermediate sequence,
+not merely the final output.  Its effectiveness depends on the correctness
+and usefulness of the teacher's rationales; a fluent explanation is not by
+itself evidence that the reasoning is valid
+\parencite{Yang2024SurveyKD,Fang2026KnowledgeDatasetDistillation}.
+
+Instruction-following distillation constructs examples containing an
+instruction \(I_i\), an optional input \(x_i\), and a teacher response
+\(y_i^T\).  The student objective is
+\begin{equation}
+    \mathcal L_{\mathrm{inst}}
+    =-\frac{1}{N}\sum_{i=1}^{N}
+    \log P_{\theta_S}(y_i^T\mid I_i,x_i).
+    \label{eq:distillation-instruction-loss}
+\end{equation}
+The diversity and difficulty of the instruction set determine the range of
+behaviors represented in the training data.  A narrow collection of simple
+instructions may yield a student that reproduces those examples but does not
+generalize to complex or unfamiliar requests.  Self-instruction approaches
+expand the dataset by asking a teacher to generate additional instructions
+and corresponding responses, followed by quality filtering
+\parencite{Yang2024SurveyKD}.
+
+\paragraph{Uncertainty-aware and multi-teacher distillation.}
+A single predictive distribution does not necessarily express all forms of
+uncertainty relevant to a task.  Uncertainty-aware distillation can use
+ensembles or probabilistic teachers to expose predictive variability and
+train the student to approximate a teacher predictive distribution.  At a
+state \(x\), a generic objective remains
+\begin{equation}
+    \mathcal L_{\mathrm{unc}}
+    =D_{\mathrm{KL}}\left(
+    p_T(\cdot\mid x)\Vert p_S(\cdot\mid x)
+    \right),
+    \label{eq:distillation-uncertainty-loss}
+\end{equation}
+but the teacher distribution can now reflect uncertainty represented by
+multiple models or posterior samples.  The Bayesian interpretation discussed
+in the survey treats teacher-induced regularization as information about a
+prior over student behavior; temperature controls the dispersion of the
+teacher-informed target.  The additional sampling or ensemble computation
+must be weighed against the value of improved calibration and robustness
+\parencite{Fang2026KnowledgeDatasetDistillation}.
+
+For \(K\) teachers with predictive distributions \(p_k(y\mid x)\), a
+simple multi-teacher target is the weighted mixture
+\begin{equation}
+    \bar p(y\mid x)
+    =\sum_{k=1}^{K}w_k(x)p_k(y\mid x),
+    \qquad w_k(x)\geq 0,\quad\sum_{k=1}^{K}w_k(x)=1.
+    \label{eq:distillation-multi-teacher-mixture}
+\end{equation}
+The student can be trained to match \(\bar p\).  Uniform weights assume
+equal teacher usefulness, whereas input-dependent weights can reflect
+specialization or reliability.  Multi-teacher distillation can combine
+complementary expertise, but it increases teacher inference cost and can
+introduce conflicts among teachers with different domains, vocabularies, or
+prediction preferences.  Dynamic and adaptive methods allow the supervisor
+or the relative contributions of teachers to change during training.  Such
+methods can support evolving data or continual learning, but co-evolution
+can make convergence and error control more difficult
+\parencite{Fang2026KnowledgeDatasetDistillation}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/distillation_teacher_student}
+    \caption{Output-level knowledge distillation.  The same context is
+    presented to teacher and student models.  Their predictive distributions
+    are compared by a distillation objective, which supplies the student
+    update without requiring the student to copy the teacher parameters.}
+    \label{fig:distillation-teacher-student}
+\end{figure}
+
+\subsection{Post-training and pre-training distillation}
+\label{subsec:distillation-training-stages}
+
+Distillation can be applied at different stages of language-model
+construction.  Post-training distillation generally starts from a pretrained
+student and transfers task-specific behavior through teacher-generated
+instructions, answers, or rationales.  Pre-training distillation instead
+uses teacher predictions over the pre-training corpus, so that the student
+receives a teacher-derived learning signal while acquiring general language
+modeling capabilities.  The two settings differ in their data distributions,
+objectives, target-generation costs, and intended transfer
+\parencite{Peng2024PretrainingDistillation,Yang2024SurveyKD}.
+
+In post-training distillation, let
+\(D_T=\{(x_i,y_i^T)\}_{i=1}^{N}\) be a collection of prompts and
+teacher-generated responses.  Teacher-forced student training minimizes
+\begin{equation}
+    \mathcal L_{\mathrm{post}}
+    =-\frac{1}{N}\sum_{i=1}^{N}
+    \log P_{\theta_S}(y_i^T\mid x_i).
+    \label{eq:distillation-posttraining-loss}
+\end{equation}
+For a response \(y_i^T=(y_{i,1}^T,\ldots,y_{i,L_i}^T)\), the
+conditional sequence probability is
+\begin{equation}
+    P_{\theta_S}(y_i^T\mid x_i)
+    =\prod_{t=1}^{L_i}
+    P_{\theta_S}(y_{i,t}^T\mid x_i,y_{i,<t}^T).
+    \label{eq:distillation-response-factorization}
+\end{equation}
+This procedure is applicable when the teacher is accessible only through a
+text-generation interface.  Its limitation is that the student is trained on
+fixed response prefixes.  During deployment, the student conditions on its
+own previous predictions, which can take it away from the histories present
+in the teacher demonstrations.  This discrepancy motivates on-policy
+distillation, developed in \cref{subsec:distillation-on-policy}.
+
+In pre-training distillation, teacher and student process contexts from a
+pre-training corpus.  Let \(x_{<t}\) be a corpus prefix and let
+\(p_T(\cdot\mid x_{<t})\) and \(p_S(\cdot\mid x_{<t})\) be their
+next-token distributions.  A generic objective combines the original token
+loss with a teacher-matching term:
+\begin{equation}
+    \mathcal L_{\mathrm{PD}}
+    =(1-\alpha)\mathcal L_{\mathrm{LM}}
+    +\alpha\frac{1}{T}\sum_{t=1}^{T}
+    D_{\mathrm{KL}}\left(
+       p_T(\cdot\mid x_{<t})
+       \Vert p_S(\cdot\mid x_{<t})
+    \right).
+    \label{eq:distillation-pretraining-objective}
+\end{equation}
+The central motivation is that the teacher distribution contains information
+about alternatives that the observed next token does not reveal.  The
+pre-training design-space study by \textcite{Peng2024PretrainingDistillation}
+examines the processing of teacher logits, the loss function, the allocation
+of distillation weight, model and data scaling, and offline versus online
+generation of teacher targets.
+
+\paragraph{Truncating teacher logits.}
+A full teacher distribution has \(C\) entries at every token position.  If
+there are \(N\) training tokens and each stored logit uses \(b\) bytes, the
+storage required for all teacher logits is approximately
+\begin{equation}
+    M_{\mathrm{full}}=NCb.
+    \label{eq:distillation-logit-storage}
+\end{equation}
+For billion-token corpora and vocabularies with hundreds of thousands of
+entries, this can require petabytes of storage.  Peng et al. report that
+storing full float32 logits for their 100-billion-token preliminary setting
+would require approximately 58.6 petabytes.  Their two-stage truncation
+procedure applies top-\(p\) selection followed by top-\(k\) selection and
+renormalizes the retained probability mass.  In top-\(p\) selection, sort
+the teacher probabilities in descending order and retain the smallest set
+\(S_p\) satisfying
+\begin{equation}
+    \sum_{i\in S_p}p_{T,(i)}\geq p,
+    \label{eq:distillation-top-p}
+\end{equation}
+where \(p_{T,(i)}\) denotes the \(i\)-th largest teacher probability.
+Top-\(k\) then caps the number of retained entries at \(k\).  If the
+retained index set is \(S\), the normalized truncated target is
+\begin{equation}
+    \widetilde p_{T,i}
+    =\frac{p_{T,i}\mathbb I[i\in S]}
+    {\displaystyle\sum_{j\in S}p_{T,j}},
+    \label{eq:distillation-truncated-target}
+\end{equation}
+where \(\mathbb I[\cdot]\) is the indicator function.  Renormalization
+is necessary because truncation removes probability mass.  The reported
+top-0.95-100 configuration reduces storage by roughly a factor of 4,000,
+from about 58.6 petabytes to approximately 15 terabytes in the preliminary
+experiment.  Truncation therefore reduces the engineering burden, although
+it also changes the target by removing the low-probability tail
+\parencite{Peng2024PretrainingDistillation}.
+
+\paragraph{Loss selection and scheduling.}
+The pre-training study compares negative log-likelihood, KL divergence, and
+mean squared error for distillation.  KL divergence and negative
+log-likelihood perform similarly in the reported experiments, whereas mean
+squared error is substantially less effective.  This distinction follows
+from the object being matched: a probability distribution has a categorical
+normalization constraint, while squared error measures Euclidean distance
+between numerical coordinates and does not directly express a distributional
+discrepancy.  The coefficient \(\alpha\) in
+\cref{eq:distillation-pretraining-objective} also affects performance.
+The reported experiments find that increasing the distillation contribution
+helps up to a point, after which further increases can reduce performance.
+
+Rather than holding \(\alpha\) constant, the study also examines a
+warmup--stable--decay (WSD) schedule.  During warmup, \(\alpha\) increases
+from zero to one; it remains at one during the stable phase and then follows
+a cosine decay toward zero.  The reported configuration uses a warmup
+proportion of approximately ten percent and a decay proportion of
+approximately one percent, paired with a WSD learning-rate schedule.  The
+schedule coordinates the strength of teacher supervision with the stage of
+student optimization.  It is an empirical configuration, not a universal
+schedule that must be optimal for every teacher, student, corpus, or training
+budget \parencite{Peng2024PretrainingDistillation}.
+
+\paragraph{Offline and online targets.}
+Offline distillation computes teacher logits using an already pretrained
+teacher and then uses those targets to train the student.  Online distillation
+stores logits while the teacher itself is being pretrained.  Online storage
+can avoid a separate teacher-inference pass and can make one teacher run
+useful for a family of students.  However, the quality of online targets
+depends on the teacher's training stage.  Peng et al. find that logits from
+early, non-converged teacher checkpoints can be noisy and yield weak student
+performance.  Later-stage online logits are more useful, although their
+reported student remains below the student trained from offline logits of a
+pretrained teacher.  Their practical conclusion is conditional: when one
+student is required, offline targets from a pretrained teacher are preferable
+in the studied setting; when multiple student sizes are to be trained, online
+logits stored during the largest model's pre-training can amortize the target
+generation cost \parencite{Peng2024PretrainingDistillation}.
+
+The same study reports that larger students generally benefit more from
+pre-training distillation, while increasing teacher size does not guarantee
+better student performance.  Its preliminary experiment distills a
+1.9-billion-parameter student from GLM-4-9B over 100 billion tokens and
+reports an average relative improvement of approximately 1.6 percent over
+the language-modeling baseline across the selected evaluations.  In its
+larger-scale experiments, improvements remain visible over a 500-billion-
+token training run.  These findings support the effectiveness of pre-training
+distillation in the investigated settings, but do not establish a universal
+gain at arbitrary model sizes or compute budgets
+\parencite{Peng2024PretrainingDistillation}.
+
+\subsection{On-policy distillation and the student-state distribution}
+\label{subsec:distillation-on-policy}
+
+The fixed-prefix objectives above define what the student should predict at
+a given context, but they do not determine where that context comes from.
+Autoregressive generation makes this distinction consequential.  Each
+student-generated token becomes part of the next context, so an early
+prediction changes the states at which later predictions are made.  A student
+trained only on reference or teacher-generated prefixes may therefore be
+poorly supervised on the histories it encounters during deployment.  On-policy
+distillation (OPD) addresses this mismatch by generating student responses
+and querying the teacher along the resulting student-generated prefixes
+\parencite{Song2026OnPolicyDistillation}.
+
+For a prompt \(x\) and a response \(y=(y_1,\ldots,y_T)\), define the
+state at position \(t\) as
+\begin{equation}
+    c_t=(x,y_{<t}),
+    \qquad y_{<t}=(y_1,\ldots,y_{t-1}).
+    \label{eq:distillation-opd-state}
+\end{equation}
+The next token is the action.  The student policy is
+\(\pi_\theta(a\mid c_t)\), and the teacher target is
+\(q(a\mid c_t^T)\), where \(c_t^T\) denotes the context available to
+the teacher.  In the simplest case, teacher and student are evaluated on
+the same text prefix.  A trajectory consists of the sequence of states and
+actions generated by the student.  Because each action changes the next
+prefix, the state distribution is induced by the policy that generates the
+response.
+
+Under off-policy distillation, training states can come from reference
+responses, teacher responses, or trajectories generated by an earlier
+student.  Under strict on-policy distillation, the states are sampled from
+the current student policy.  A trajectory collected by an earlier student
+was on-policy when it was generated, but becomes stale relative to a later
+student after the parameters change.  Re-scoring a stored trajectory can
+refresh teacher supervision without refreshing the state distribution.
+This distinction between the source of states and whether a dataset is stored
+or processed offline is important when designing replay and asynchronous
+training systems \parencite{Song2026OnPolicyDistillation}.
+
+A common distribution-matching formulation is
+\begin{equation}
+    \mathcal L_{\mathrm{match}}(\theta)
+    =\mathbb E_{s\sim d_\mu}
+    \left[
+      w(s)D_f\left(
+      q(\cdot\mid s^T)\Vert
+      \pi_\theta(\cdot\mid s)
+      \right)
+    \right],
+    \label{eq:distillation-opd-general}
+\end{equation}
+where \(d_\mu\) is the state distribution induced by collection policy
+\(\mu\), \(w(s)\) is a nonnegative state weight, and \(D_f\) is an
+\(f\)-divergence.  For a convex generator \(f\) satisfying \(f(1)=0\),
+\begin{equation}
+    D_f(P\Vert Q)
+    =\mathbb E_{a\sim Q}
+    \left[
+      f\left(\frac{P(a)}{Q(a)}\right)
+    \right].
+    \label{eq:distillation-f-divergence}
+\end{equation}
+Choosing \(f(u)=u\log u\) yields forward KL, while
+\(f(u)=-\log u\) yields reverse KL, wherever the required probability
+ratios are defined.  Equation \cref{eq:distillation-opd-general}
+separates three decisions: which states are visited, which target the teacher
+provides at those states, and which discrepancy is used to compare teacher
+and student distributions.  Strict on-policy collection corresponds to
+\(\mu=\pi_\theta\).
+
+\paragraph{Sampled-token objectives and variance reduction.}
+Full-vocabulary matching uses teacher probabilities for all possible next
+tokens at a visited prefix.  A sampled-token surrogate can instead use only
+the token drawn from the student.  Let
+\begin{equation}
+    r_t=\log\frac{p_T(y_t\mid c_t)}
+    {p_\theta(y_t\mid c_t)}.
+    \label{eq:distillation-opd-log-ratio}
+\end{equation}
+A detached reverse-KL surrogate is
+\begin{equation}
+    \ell_t(\theta)
+    =-\operatorname{sg}[r_t]
+    \log p_\theta(y_t\mid c_t),
+    \label{eq:distillation-opd-sampled-surrogate}
+\end{equation}
+where \(\operatorname{sg}[\cdot]\) denotes stop-gradient: the
+coefficient is held fixed while differentiating the student log-probability.
+If \(r_t>0\), the teacher assigns the sampled token greater probability
+than the student and the update reinforces that token.  If \(r_t<0\), the
+update suppresses it.  This estimator avoids an explicit sum over the full
+vocabulary, but it does not directly provide a positive correction for every
+teacher-preferred alternative that the student did not sample.  Restricting
+supervision to top-\(K\) tokens, discarding the tail, renormalizing it, or
+representing it as a residual probability bucket changes the effective
+support of the objective \parencite{Song2026OnPolicyDistillation}.
+
+A baseline can reduce sampling variance without changing the expected
+conditional score-function gradient when it depends on the prefix but not
+on the sampled action.  The conditional mean log-ratio baseline is
+\begin{align}
+    b_t(c_t)
+    &=\mathbb E_{a\sim p_\theta(\cdot\mid c_t)}
+      \left[
+      \log\frac{p_T(a\mid c_t)}{p_\theta(a\mid c_t)}
+      \right]\nonumber\\
+    &=-D_{\mathrm{KL}}\left(
+      p_\theta(\cdot\mid c_t)
+      \Vert p_T(\cdot\mid c_t)
+      \right).
+    \label{eq:distillation-opd-baseline}
+\end{align}
+Subtracting this action-independent baseline centers the immediate
+conditional learning signal.  It is a control variate: it changes the
+variance of the estimator without changing its expectation under the stated
+sampling conditions.  It should not be confused with a value function that
+estimates cumulative future discrepancies
+\parencite{Song2026OnPolicyDistillation}.
+
+\paragraph{Sequence-level reverse KL and temporal credit.}
+A local conditional objective treats a visited prefix as fixed.  It does not
+necessarily assign credit to an earlier token for changing the prefixes that
+will be visited later.  Sequence-level reverse KL accounts for this temporal
+dependence.  Let \(p_\theta(y)\) and \(p_T(y)\) be the student and teacher
+sequence distributions, and let the student trajectory be sampled from
+\(p_\theta\).  For a fixed teacher with support on the student-generated
+responses, the ideal student-sampled gradient can be written as
+\begin{equation}
+    \nabla_\theta D_{\mathrm{KL}}(p_\theta\Vert p_T)
+    =-\mathbb E_{y\sim p_\theta}
+    \left[
+      \sum_{t=1}^{|y|}(R_t-1)
+      \nabla_\theta\log p_\theta(y_t\mid c_t)
+    \right],
+    \label{eq:distillation-sequence-reverse-kl-gradient}
+\end{equation}
+where the return-to-go of log-probability ratios is
+\begin{equation}
+    R_t=\sum_{t'=t}^{|y|}
+    \log\frac{p_T(y_{t'}\mid c_{t'})}
+    {p_\theta(y_{t'}\mid c_{t'})}.
+    \label{eq:distillation-sequence-return}
+\end{equation}
+The constant score contribution vanishes in expectation, whereas \(R_t\)
+allows an earlier action to receive credit for teacher--student discrepancies
+at later positions.  MiniLLM uses sequence-level reverse KL and approximates
+the practical update using teacher--student mixed sampling, per-token
+importance ratios, and length normalization.  These implementation choices
+matter: without suitable sampling and length control, reverse-KL training can
+reduce its objective while producing short, repetitive, or otherwise
+unhelpful responses \parencite{Song2026OnPolicyDistillation}.
+
+A discounted temporal objective makes the horizon of credit assignment
+explicit.  Define the local log-probability discrepancy
+\begin{equation}
+    \Delta_t
+    =\log p_\theta(y_t\mid c_t)
+    -\log p_T(y_t\mid c_t).
+    \label{eq:distillation-opd-local-gap}
+\end{equation}
+The discounted return-like quantity is
+\begin{equation}
+    A_t^{(\gamma)}
+    =-\sum_{t'=t}^{T}
+    \gamma^{t'-t}\Delta_{t'},
+    \qquad 0\leq\gamma\leq 1.
+    \label{eq:distillation-opd-discounted-advantage}
+\end{equation}
+At \(\gamma=0\), the signal is local to the current token.  At
+\(\gamma=1\), it includes the undiscounted future discrepancies through
+the end of the sequence.  Intermediate values trade off local correction
+against longer-range temporal credit.  Under the uniform second-moment
+assumption analyzed in the on-policy survey, fixed \(\gamma<1\) gives a
+horizon-independent upper bound on the variance of this advantage estimate;
+that statement is not, by itself, a variance bound for the complete
+parameter-gradient estimator \parencite{Song2026OnPolicyDistillation}.
+
+The teacher's reliability at student-generated prefixes is a separate
+condition.  A prefix may contain an incorrect intermediate step or a context
+that the teacher would not ordinarily generate.  High standalone teacher
+accuracy does not guarantee reliable guidance at every such state.  Teacher
+adaptation, eligibility tests, target repair, and selective supervision are
+therefore relevant extensions.  On-policy distillation solves an important
+state-distribution mismatch, but it does not make every teacher prediction
+correct or every teacher target learnable by the student
+\parencite{Song2026OnPolicyDistillation}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/distillation_on_policy_loop}
+    \caption{The on-policy distillation loop.  The student generates its own
+    response prefixes; the teacher evaluates those prefixes and supplies
+    targets; the resulting update changes the student that generates the next
+    trajectories.  The state distribution therefore changes as the student
+    is optimized.}
+    \label{fig:distillation-on-policy-loop}
+\end{figure}
+
+\subsection{Distillation scaling laws and compute allocation}
+\label{subsec:distillation-scaling-laws}
+
+A distillation objective specifies what the student should imitate, but it
+does not guarantee that the student has enough representational capacity,
+data, or compute to learn the target.  The teacher may be more capable than
+the student can approximate.  Conversely, a teacher that is too weak may
+provide little information beyond the original training targets.  The
+teacher--student capacity gap must therefore be considered jointly with the
+student's training budget.  The distillation scaling study by
+\textcite{Busbridge2025DistillationScalingLaws} makes this relationship
+quantitative through validation cross-entropy.
+
+A conventional supervised scaling relation expresses validation loss as a
+function of parameter count \(N\) and training tokens \(D\):
+\begin{equation}
+    L(N,D)
+    =E+\left(\frac{A}{N^\alpha}
+    +\frac{B}{D^\beta}\right)^\gamma,
+    \label{eq:distillation-supervised-scaling-law}
+\end{equation}
+where \(E\) is an irreducible-error term under the fitted model,
+\(A,B,\alpha,\beta,\gamma\) are positive fitted coefficients, and
+\(N,D\) represent model capacity and data scale.  Increasing either model
+size or training data generally reduces loss with diminishing marginal
+returns.  Under a fixed compute budget, compute-optimal training chooses the
+model size and token count that minimize validation loss subject to the
+training FLOP constraint.
+
+For distillation, let \(N_S\) be the number of student non-embedding
+parameters, \(D_S\) the number of distillation tokens, and \(L_T\) the
+teacher validation cross-entropy.  Let
+\begin{equation}
+    \widetilde L_S=L(N_S,D_S)
+    \label{eq:distillation-supervised-student-reference}
+\end{equation}
+be the cross-entropy expected for a student of that size and token budget
+under the supervised scaling relation.  Busbridge et al. fit the following
+distillation scaling law:
+\begin{equation}
+\begin{aligned}
+    L_S(N_S,D_S,L_T)
+    ={}&L_T
+    +c_0\left[
+      1+\left(\frac{L_T}{\widetilde L_S}\right)^{1/f_1}
+    \right]^{-c_1f_1}\\
+    &\times\left(
+      \frac{A}{N_S^{\alpha'}}
+      +\frac{B}{D_S^{\beta'}}
+    \right)^{\gamma'},
+\end{aligned}
+    \label{eq:distillation-scaling-law}
+\end{equation}
+where \(c_0,c_1,f_1,A,B,\alpha',\beta',\gamma'\) are positive
+coefficients fitted to the experimental data.  The first term is the
+teacher cross-entropy.  The second term models the student's ability to
+approximate the teacher and depends on student size and distillation data.
+The ratio \(L_T/\widetilde L_S\) captures the relative learning abilities
+of teacher and student on the reference task.  The fitted transition
+produces a capacity gap: at fixed student size and data budget, improving
+the teacher initially helps, but a teacher that becomes too difficult for
+the student to imitate can eventually produce a worse student.  The optimal
+teacher is therefore not necessarily the strongest available teacher.
+
+The scaling law is empirical and was fitted to a particular family of
+language models and training conditions.  It should not be interpreted as a
+universal law independent of architecture, data distribution, tokenization,
+or optimization.  Its main contribution is to make teacher quality,
+student capacity, and the number of distillation tokens explicit in one
+predictive relation \parencite{Busbridge2025DistillationScalingLaws}.
+
+\paragraph{Compute accounting.}
+Distillation consumes compute for student training, teacher inference, and,
+when the teacher does not already exist, teacher pre-training.  Let \(F(N)\)
+be the forward-pass FLOPs per token for a model with \(N\) parameters.
+Busbridge et al. approximate the total cost as
+\begin{equation}
+    C_{\mathrm{distill}}
+    \approx 3F(N_S)D_S
+    +F(N_T)\left(
+       \delta_{T}^{\mathrm{logit}}D_S
+       +3\delta_{T}^{\mathrm{pre}}D_T
+    \right),
+    \label{eq:distillation-compute-cost}
+\end{equation}
+where \(N_T\) and \(D_T\) are teacher parameter count and pre-training
+tokens.  The factor of three in the student term approximates forward and
+backward training cost; the teacher-logit term accounts for teacher forward
+passes used to produce targets; and the teacher-pretraining term accounts
+for training the teacher.  The indicators
+\(\delta_T^{\mathrm{logit}}\) and
+\(\delta_T^{\mathrm{pre}}\) specify which costs are charged to the
+current budget.  A fully amortized teacher can make both indicators zero;
+if the teacher already exists but must be queried for this student, only
+the logit cost is counted; if teacher training is required and its logits
+are stored for reuse, the pre-training cost is counted; if both teacher
+training and student-specific inference are charged, both terms are
+included.
+
+This accounting changes the comparison with supervised learning.  When a
+suitable teacher already exists or will be reused across many students,
+distillation can amortize the teacher cost and outperform supervised
+training over a range of budgets.  When a teacher must be trained solely
+for one student, the teacher's pre-training and inference costs can make
+supervised learning preferable.  Busbridge et al. find that the compute
+regime in which distillation is advantageous depends on student size and
+teacher reuse; distillation is not automatically more efficient merely
+because the final student is smaller
+\parencite{Busbridge2025DistillationScalingLaws}.
+
+\subsection{Dataset distillation and its integration with model distillation}
+\label{subsec:distillation-dataset-distillation}
+
+Knowledge distillation compresses a model's learned behavior.  Dataset
+distillation addresses a complementary problem: it attempts to construct a
+small synthetic dataset that preserves information needed to train a model.
+Let the original dataset be
+\(D_R=\{(x_i,y_i)\}_{i=1}^{N}\), and let a compact synthetic dataset be
+\(D_S=\{(\widetilde x_j,\widetilde y_j)\}_{j=1}^{M}\), with
+\(M\ll N\).  Unlike ordinary data selection, which retains existing
+examples, dataset distillation can optimize or generate synthetic examples
+specifically to preserve the learning signal of the original corpus
+\parencite{Fang2026KnowledgeDatasetDistillation}.
+
+\paragraph{Gradient-matching formulations.}
+Let \(\mathcal L(D;\theta)\) be the training loss of a model with
+parameters \(\theta\) on dataset \(D\).  At optimization state
+\(\theta_t\), define the original-data and synthetic-data gradients as
+\begin{equation}
+    g_R^{(t)}=\nabla_{\theta_t}\mathcal L(D_R;\theta_t),
+    \qquad
+    g_S^{(t)}=\nabla_{\theta_t}\mathcal L(D_S;\theta_t).
+    \label{eq:distillation-dataset-gradients}
+\end{equation}
+A gradient-matching objective seeks a synthetic dataset whose updates
+resemble those induced by the original data:
+\begin{equation}
+    \min_{D_S}
+    \sum_{t=0}^{K-1}
+    \left\|
+      \nabla_{\theta_t}\mathcal L(D_S;\theta_t)
+      -\nabla_{\theta_t}\mathcal L(D_R;\theta_t)
+    \right\|_2^2.
+    \label{eq:distillation-gradient-matching}
+\end{equation}
+The Euclidean norm measures the discrepancy between the parameter updates
+induced by the two datasets.  If the synthetic examples produce similar
+gradients over the relevant training trajectory, training on the compact
+set may approximate aspects of training on the full dataset.  The method
+can be computationally expensive because synthetic samples must be
+optimized against model-training dynamics, often involving repeated
+higher-order or unrolled computations.
+
+\paragraph{Generative synthesis and selection.}
+A generative approach learns a mapping \(G\) from a latent variable
+\(z\sim p(z)\) to a synthetic example:
+\begin{equation}
+    \widetilde x=G(z),
+    \qquad z\sim p(z).
+    \label{eq:distillation-generative-sample}
+\end{equation}
+The generator is trained to produce representative examples of the original
+data distribution or examples that preserve task-relevant information.  The
+survey also distinguishes dataset synthesis from data selection: selection
+identifies a high-quality subset of existing examples, whereas synthesis
+constructs new examples through optimization, generative models, or
+heuristics.  These methods trade off computational cost, sample diversity,
+and the fidelity with which rare or difficult patterns are preserved
+\parencite{Fang2026KnowledgeDatasetDistillation}.
+
+\paragraph{Combining dataset and knowledge distillation.}
+The two forms of compression can be integrated.  A teacher is first trained
+on the original dataset; a compact synthetic coreset is then constructed;
+and teacher predictions can be used as soft targets on the synthetic
+examples.  If
+\(C_{\mathrm{syn}}=\{(\widetilde x_i,\widetilde y_i)\}_{i=1}^{M}\)
+is the synthetic coreset, a student can be trained using
+\begin{equation}
+    \mathcal L_{C_{\mathrm{syn}}}(\theta_S)
+    =-\frac{1}{M}\sum_{i=1}^{M}
+    \sum_{v\in\mathcal V}
+    \widetilde y_{i,v}
+    \log p_{\theta_S}(v\mid\widetilde x_i),
+    \label{eq:distillation-synthetic-soft-label-loss}
+\end{equation}
+where \(\widetilde y_i\) is the teacher-derived target distribution.
+This combines compression of the training examples with compression of the
+teacher's predictive behavior.  The central risk is that aggressive dataset
+compression can remove rare linguistic structures, facts, or reasoning
+patterns that occupy little volume in the original corpus but matter for
+generalization.  The size of the synthetic set is therefore not sufficient
+evidence of its information coverage
+\parencite{Fang2026KnowledgeDatasetDistillation}.
+
+\subsection{Evaluation of distilled language models}
+\label{subsec:distillation-evaluation}
+
+A distilled model must be evaluated along several dimensions because
+predictive quality, teacher fidelity, efficiency, and robustness are not
+equivalent objectives.  A student can reproduce teacher outputs closely
+without generalizing well to unseen tasks.  It can also outperform the
+teacher on a particular benchmark while differing substantially from the
+teacher's original distribution.  Evaluation must therefore compare the
+student both with the teacher and with independent task targets
+\parencite{Yang2024SurveyKD,Fang2026KnowledgeDatasetDistillation}.
+
+For language modeling, perplexity is the exponential of token-averaged
+negative log-likelihood:
+\begin{equation}
+    \operatorname{PPL}
+    =\exp\left(
+      -\frac{1}{T}\sum_{t=1}^{T}
+      \log p_{\theta_S}(x_t\mid x_{<t})
+    \right).
+    \label{eq:distillation-perplexity}
+\end{equation}
+Lower perplexity means that the model assigns higher average probability
+to the observed evaluation tokens.  For task-based evaluation, accuracy,
+exact match, and F1-score measure different aspects of answer correctness.
+Benchmarks for knowledge, reasoning, mathematics, commonsense, and
+instruction following are needed to determine whether the student preserves
+capabilities beyond the examples used for distillation.  A benchmark result
+is meaningful only with its task definition, data split, prompting protocol,
+and scoring procedure specified.
+
+Teacher fidelity can be measured directly through a distributional
+comparison such as
+\begin{equation}
+    \mathcal F_{\mathrm{KD}}
+    =\mathbb E_{x\sim\mathcal D_{\mathrm{eval}}}
+    \left[
+      D_{\mathrm{KL}}\left(
+      p_T(\cdot\mid x)\Vert p_S(\cdot\mid x)
+      \right)
+    \right].
+    \label{eq:distillation-fidelity}
+\end{equation}
+A lower value indicates closer predictive distributions under the selected
+evaluation contexts.  Representation-based methods can additionally compare
+hidden states using cosine similarity or representation-similarity measures.
+These metrics assess transfer fidelity, not necessarily task correctness.
+
+Efficiency evaluation should include model parameter count, storage,
+peak memory, inference latency, throughput, and arithmetic cost.  A simple
+parameter compression ratio is
+\begin{equation}
+    R_{\mathrm{compression}}
+    =\frac{N_T}{N_S},
+    \label{eq:distillation-compression-ratio}
+\end{equation}
+but parameter count alone does not determine wall-clock latency or memory
+consumption.  Architecture, sequence length, hardware, batching, and
+implementation all influence actual deployment cost.  Training efficiency
+must also account for teacher inference and, where relevant, teacher
+pre-training, as in \cref{eq:distillation-compute-cost}.
+
+Robustness and calibration are also relevant when the student is expected
+to operate under noisy or shifted inputs.  Predictive entropy
+\cref{eq:distillation-entropy} describes the uncertainty of a single
+categorical distribution, while calibration compares stated confidence
+with empirical accuracy.  One common calibration statistic is expected
+calibration error (ECE).  If evaluation examples are partitioned into
+confidence bins \(B_m\), then
+\begin{equation}
+    \operatorname{ECE}
+    =\sum_{m=1}^{M}
+    \frac{|B_m|}{N}
+    \left|
+      \operatorname{acc}(B_m)
+      -\operatorname{conf}(B_m)
+    \right|.
+    \label{eq:distillation-ece}
+\end{equation}
+Here \(\operatorname{acc}(B_m)\) is empirical accuracy in bin \(m\),
+and \(\operatorname{conf}(B_m)\) is its average predicted confidence.
+Robustness testing should also consider distribution shifts and adversarial
+perturbations where appropriate.  No single metric captures all these
+properties; a distillation method should be assessed against the deployment
+requirements it is intended to satisfy
+\parencite{Yang2024SurveyKD,Fang2026KnowledgeDatasetDistillation}.
+
+\subsection{Limitations and connection to parameter-efficient fine-tuning}
+\label{subsec:distillation-limitations-next-topic}
+
+Knowledge distillation reduces deployment cost only when the student
+preserves the capabilities needed by its application.  Several limitations
+follow from the mechanisms developed above.  A narrow distillation dataset
+may omit capabilities that are not expressed in its prompts or examples.
+Teacher-generated rationales may be fluent but incorrect, and a student can
+inherit teacher biases or systematic errors.  Multi-teacher training can
+combine complementary expertise but also increases inference cost and
+creates conflicts among heterogeneous supervisors.  Hint-based methods
+require decisions about which layers or representations should be aligned,
+and intermediate activation storage can become expensive.  On-policy
+methods expose the teacher to student-generated histories, but teacher
+reliability at erroneous or unfamiliar prefixes remains a separate problem.
+Finally, a teacher that is substantially more capable than the student may
+be difficult to imitate, while the cost of producing teacher targets can
+outweigh the savings from a smaller student
+\parencite{Yang2024SurveyKD,Peng2024PretrainingDistillation,Busbridge2025DistillationScalingLaws,Song2026OnPolicyDistillation}.
+
+These limitations show why distillation is not a universal replacement for
+conventional pre-training or fine-tuning.  Its value depends on the
+information available from the teacher, the student's capacity, the data
+coverage, the optimization objective, and the total compute budget.  Dataset
+distillation can reduce the volume of training information that must be
+processed, while quantization reduces the numerical precision required for
+model storage and computation.  Distillation addresses a different source
+of cost: it transfers learned behavior to a model with a smaller or more
+suitable parameterization.  These strategies can be combined, but their
+benefits must be measured at the level of the complete training and
+inference pipeline.
+
+The next section turns from transferring behavior between models to
+adapting an existing model with a restricted set of trainable parameters.
+Parameter-efficient fine-tuning investigates how a pretrained model can be
+specialized without updating all of its parameters.  It therefore continues
+the chapter's central optimization question from a complementary direction:
+how can useful model behavior be obtained and adapted while controlling the
+computational and memory costs of learning?

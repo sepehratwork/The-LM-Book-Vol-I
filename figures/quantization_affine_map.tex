@@ -1,0 +1,27 @@
+% Figure source fragment: uniform affine quantization and dequantization.
+% This file is inserted inside a figure environment using \input.
+\begin{center}
+\setlength{\fboxsep}{6pt}
+\begin{tabular}{c}
+    \fbox{\parbox[c][0.82cm][c]{0.55\textwidth}{\centering
+        \textbf{Real-valued input}\\
+        \(x\in\mathbb{R}\)}}\\[0.25em]
+    \(\downarrow\;\text{divide by }s\)\\[0.2em]
+    \fbox{\parbox[c][0.82cm][c]{0.55\textwidth}{\centering
+        \textbf{Scale}\\
+        \(x/s\)}}\\[0.25em]
+    \(\downarrow\;\text{round to nearest integer}\)\\[0.2em]
+    \fbox{\parbox[c][0.82cm][c]{0.55\textwidth}{\centering
+        \textbf{Shift and clip}\\
+        \(\operatorname{clamp}(\operatorname{round}(x/s)+z,
+        q_{\min},q_{\max})\)}}\\[0.25em]
+    \(\downarrow\)\\[0.2em]
+    \fbox{\parbox[c][0.82cm][c]{0.55\textwidth}{\centering
+        \textbf{Integer code}\\
+        \(x_{\mathrm{int}}\in\mathbb{Z}\)}}\\[0.25em]
+    \(\downarrow\;\text{dequantize: }s(x_{\mathrm{int}}-z)\)\\[0.2em]
+    \fbox{\parbox[c][0.82cm][c]{0.55\textwidth}{\centering
+        \textbf{Reconstructed value}\\
+        \(\widehat{x}\approx x\)}}\\
+\end{tabular}
+\end{center}

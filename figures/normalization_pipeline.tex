@@ -1,0 +1,51 @@
+% Figure source fragment: comparison of LayerNorm, RMSNorm, and DyT.
+% This file is inserted inside a figure environment using \input.
+\begin{center}
+\small
+\setlength{\fboxsep}{6pt}
+\begin{tabular}{ccc}
+    \textbf{LayerNorm} &
+    \textbf{RMSNorm} &
+    \textbf{Dynamic Tanh} \\[0.4em]
+    \fbox{\parbox{0.28\textwidth}{\centering
+        \textbf{Input token}\\
+        \(\mathbf{x}\in\mathbb{R}^{C}\)\\[0.25em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Token statistics}\\
+        \(\mu=\frac{1}{C}\sum_k x_k\)\\
+        \(\sigma^2=\frac{1}{C}\sum_k(x_k-\mu)^2\)\\[0.2em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Center and scale}\\
+        \(\widehat{\mathbf{x}}=
+        \frac{\mathbf{x}-\mu}{\sqrt{\sigma^2+\varepsilon}}\)\\[0.2em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Affine output}\\
+        \(\boldsymbol{\gamma}\odot\widehat{\mathbf{x}}+
+        \boldsymbol{\beta}\)}} &
+    \fbox{\parbox{0.28\textwidth}{\centering
+        \textbf{Input token}\\
+        \(\mathbf{x}\in\mathbb{R}^{C}\)\\[0.25em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Token RMS}\\
+        \(r=\sqrt{\frac{1}{C}\sum_k x_k^2}\)\\[0.2em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Scale without centering}\\
+        \(\widehat{\mathbf{x}}=\frac{\mathbf{x}}{\sqrt{r^2+\varepsilon}}\)\\[0.2em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Scaled output}\\
+        \(\boldsymbol{\gamma}\odot\widehat{\mathbf{x}}\)}} &
+    \fbox{\parbox{0.28\textwidth}{\centering
+        \textbf{Input token}\\
+        \(\mathbf{x}\in\mathbb{R}^{C}\)\\[0.25em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Learnable scaling}\\
+        \(\alpha\mathbf{x}\)\\[0.2em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Element-wise tanh}\\
+        \(u_k=\tanh(\alpha x_k)\)\\[0.2em]
+        \(\downarrow\)\\[0.2em]
+        \textbf{Affine output}\\
+        \(\boldsymbol{\gamma}\odot\mathbf{u}+
+        \boldsymbol{\beta}\)}}
+\end{tabular}
+\end{center}

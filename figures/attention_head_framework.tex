@@ -1,0 +1,30 @@
+% Figure source fragment: four-stage attention-head interpretability framework.
+% This file is inserted inside a figure environment using \input.
+\begin{center}
+\setlength{\fboxsep}{5pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{cc}
+    \fbox{\parbox[t][1.65cm][t]{0.42\textwidth}{\centering
+        \textbf{Knowledge Recalling}\\[0.2em]
+        \footnotesize Memory Head; Constant Head;\\
+        Single Letter Head; Negative Head.}} &
+    \fbox{\parbox[t][1.65cm][t]{0.42\textwidth}{\centering
+        \textbf{In-Context Identification}\\[0.2em]
+        \footnotesize Previous Head; Retrieval Head;\\
+        Syntactic Head; Name Mover Head.}}\\[0.35em]
+    \fbox{\parbox[t][1.65cm][t]{0.42\textwidth}{\centering
+        \textbf{Latent Reasoning}\\[0.2em]
+        \footnotesize Induction Head; Function Vector;\\
+        Truthfulness Head; Successor Head.}} &
+    \fbox{\parbox[t][1.65cm][t]{0.42\textwidth}{\centering
+        \textbf{Expression Preparation}\\[0.2em]
+        \footnotesize Mixed Head; Amplification Head;\\
+        Correct Head; Coherence and Faithfulness Heads.}}
+\end{tabular}
+
+\par\smallskip
+\footnotesize
+The stages are descriptive categories and can interact; they do not form
+a rigid computational pipeline.
+\normalsize
+\end{center}

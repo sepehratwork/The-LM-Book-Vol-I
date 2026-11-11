@@ -1,0 +1,1899 @@
+% ============================================================================
+% 02_architecture | 06_attention
+% Section-body file: include immediately after the relevant \section command
+% in the master tstextbook.tex file. This file intentionally contains no
+% document class, package imports, \chapter, \section, or bibliography command.
+% Figure sources are TeX fragments stored under the root-level figures folder.
+% All citations refer only to the papers supplied for this section.
+% ============================================================================
+
+The preceding discussion examined normalization as a means of controlling the
+scale and statistical behavior of intermediate representations. A further
+architectural question remains: how can the representation of one token
+incorporate information carried by other tokens in the same sequence? Token
+embeddings and positional information establish the initial numerical
+representations, while normalization and position-wise transformations operate
+on those representations. None of these operations, by itself, specifies a
+content-dependent mechanism through which one position can retrieve
+information from another. The attention mechanism supplies this missing
+operation. It computes relationships between token representations and uses
+those relationships to determine how information is exchanged across sequence
+positions. Attention is therefore the next step in the architectural account
+of how a language model converts a sequence of token representations into
+context-dependent representations
+\parencite{ansar2024transformers,dao2023flashattention2}.
+
+\subsection{The role of attention in sequence representation}
+\label{subsec:attn-role-sequence-representation}
+
+Consider a sequence containing \(N\) tokens. After tokenization, embedding,
+and the addition or incorporation of positional information, each token is
+represented by a vector in a \(d_{\mathrm{model}}\)-dimensional real vector
+space. Using a row-vector convention, the sequence can be written as
+\begin{equation}
+    X =
+    \begin{bmatrix}
+        x_1\\
+        x_2\\
+        \vdots\\
+        x_N
+    \end{bmatrix}
+    \in
+    \mathbb{R}^{N\times d_{\mathrm{model}}},
+    \qquad
+    x_i\in\mathbb{R}^{1\times d_{\mathrm{model}}}.
+    \label{eq:attn-input-matrix}
+\end{equation}
+Each row is the current representation of one token position. The word
+``current'' is important: in a deep Transformer, a row of \(X\) is not
+necessarily the original embedding of the token. It may already contain
+information produced by preceding layers.
+
+The representation required at position \(i\) generally depends on more than
+the token at that position. A word may be disambiguated by another word in the
+sentence; a pronoun may refer to an entity introduced earlier; and a question
+may require information distributed across several parts of a document. A
+model that transforms each token independently cannot directly exchange
+information between positions through that transformation alone. Attention
+addresses this requirement by allowing each position to retrieve a
+content-dependent combination of information from other positions.
+
+The mechanism separates two questions. The first is which positions are
+relevant to the current position. The second is what information should be
+transferred from those positions. Queries and keys determine the first
+relationship, while values carry the information used in the second
+operation. This separation is the basis of the query--key--value formulation
+of attention described in the supplied Transformer survey
+\parencite{ansar2024transformers}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/attention_qkv_pipeline}
+    \caption{Computational flow of scaled dot-product attention. The input
+    representations are projected into queries, keys, and values; query--key
+    compatibility scores are scaled and normalized; and the resulting
+    attention weights determine the weighted aggregation of value vectors.
+    The formulation follows the attention descriptions in
+    \textcite{ansar2024transformers} and \textcite{dao2023flashattention2}.}
+    \label{fig:attn-qkv-pipeline}
+\end{figure}
+% Alt text for accessibility register: A flow diagram showing an input
+% sequence matrix branching into query, key, and value projections. Queries
+% and transposed keys form a score matrix, which is scaled, masked if needed,
+% and normalized by row-wise softmax. The resulting weights multiply values
+% to produce contextualized output representations.
+
+\subsection{Query, key, and value representations}
+\label{subsec:attn-qkv-representations}
+
+Attention begins by applying three learned linear projections to the input
+matrix \(X\). For one attention head, define
+\begin{align}
+    Q &= XW_Q,
+    & W_Q&\in\mathbb{R}^{d_{\mathrm{model}}\times d_k},
+    \label{eq:attn-query-projection}\\
+    K &= XW_K,
+    & W_K&\in\mathbb{R}^{d_{\mathrm{model}}\times d_k},
+    \label{eq:attn-key-projection}\\
+    V &= XW_V,
+    & W_V&\in\mathbb{R}^{d_{\mathrm{model}}\times d_v}.
+    \label{eq:attn-value-projection}
+\end{align}
+The resulting matrices have dimensions
+\begin{equation}
+    Q,K\in\mathbb{R}^{N\times d_k},
+    \qquad
+    V\in\mathbb{R}^{N\times d_v}.
+    \label{eq:attn-qkv-shapes}
+\end{equation}
+Here, \(d_k\) is the query and key dimension, and \(d_v\) is the value
+dimension. The matrices \(W_Q\), \(W_K\), and \(W_V\) are trainable
+parameters. The \(i\)-th rows of \(Q\), \(K\), and \(V\) are denoted by
+\(q_i\), \(k_i\), and \(v_i\), respectively:
+\begin{equation}
+    q_i=x_iW_Q,\qquad
+    k_i=x_iW_K,\qquad
+    v_i=x_iW_V.
+    \label{eq:attn-qkv-token}
+\end{equation}
+
+A query is the projected representation used by a position to express what
+information it seeks. A key is the projected representation against which
+queries are compared. A value is the projected content contributed by a
+position when another position attends to it. These descriptions identify
+their computational roles; they do not imply that queries, keys, or values
+are literal symbolic questions, labels, or database records. They are learned
+vectors whose geometry is shaped by optimization.
+
+The query and key dimensions must agree because their compatibility is
+computed by a dot product. The value dimension need not equal the key
+dimension. This distinction allows the model to learn one representation
+space for deciding where to retrieve information and another for representing
+the information that is transferred.
+
+\subsection{Scaled dot-product attention}
+\label{subsec:attn-scaled-dot-product}
+
+\paragraph{Compatibility scores.}
+For a query \(q_i\) and key \(k_j\), the unnormalized compatibility score is
+their inner product:
+\begin{equation}
+    s_{ij}=q_i k_j^\top
+    =\sum_{r=1}^{d_k}q_{ir}k_{jr}.
+    \label{eq:attn-dot-product-score}
+\end{equation}
+The dot product is a scalar measure of alignment in the learned query--key
+space. It is not a probability and is not restricted to the interval
+\([0,1]\). It may be positive, negative, or zero. For all query--key pairs,
+the scores are computed by the matrix multiplication
+\begin{equation}
+    S=QK^\top,
+    \qquad
+    S\in\mathbb{R}^{N\times N}.
+    \label{eq:attn-score-matrix}
+\end{equation}
+The element \(S_{ij}\) is the score assigned by query position \(i\) to key
+position \(j\). Thus, dense self-attention constructs an \(N\times N\)
+matrix of pairwise interactions.
+
+\paragraph{Why the scores are scaled.}
+The magnitude of an unscaled dot product depends on the dimension \(d_k\).
+A statistical argument explains the scaling used in the standard
+formulation. Assume, for this calculation, that the components of \(q_i\)
+and \(k_j\) are mutually independent, have zero mean, and have unit
+variance. Then
+\begin{equation}
+    \mathbb{E}[q_i k_j^\top]=0,
+    \qquad
+    \operatorname{Var}(q_i k_j^\top)=d_k.
+    \label{eq:attn-dot-product-variance}
+\end{equation}
+The variance therefore increases linearly with the key dimension. Dividing
+the dot product by \(\sqrt{d_k}\) gives a score with unit variance under
+these assumptions:
+\begin{equation}
+    \operatorname{Var}
+    \left(
+        \frac{q_i k_j^\top}{\sqrt{d_k}}
+    \right)
+    =
+    \frac{d_k}{d_k}=1.
+    \label{eq:attn-scaled-variance}
+\end{equation}
+This is a scale-control argument under a simplifying statistical model, not
+a claim that trained attention scores necessarily have unit variance.
+
+The scaled score matrix is
+\begin{equation}
+    \widetilde S
+    =
+    \frac{QK^\top}{\sqrt{d_k}}.
+    \label{eq:attn-scaled-score}
+\end{equation}
+The scaling reduces the tendency for score magnitudes to grow merely because
+the projection dimension is larger. This is relevant because softmax can
+become highly concentrated when its inputs have large differences. A
+concentrated distribution can yield small derivatives for many score
+components and can make optimization less well-conditioned. The scaled
+dot-product formulation is the standard attention computation described in
+the supplied surveys and in the FlashAttention-2 paper
+\parencite{ansar2024transformers,dao2023flashattention2}.
+
+\paragraph{Softmax normalization.}
+The score matrix is converted into attention weights by applying softmax
+independently to each row. For a vector
+\(s=(s_1,\ldots,s_N)\), softmax is
+\begin{equation}
+    \operatorname{softmax}(s)_j
+    =
+    \frac{\exp(s_j)}
+         {\displaystyle\sum_{r=1}^{N}\exp(s_r)}.
+    \label{eq:attn-softmax-definition}
+\end{equation}
+The attention probability matrix is therefore
+\begin{equation}
+    P=
+    \operatorname{softmax}_{\mathrm{row}}
+    \left(
+        \frac{QK^\top}{\sqrt{d_k}}
+    \right),
+    \qquad
+    P\in\mathbb{R}^{N\times N}.
+    \label{eq:attn-probability-matrix}
+\end{equation}
+For every row \(i\),
+\begin{equation}
+    P_{ij}\geq 0,
+    \qquad
+    \sum_{j=1}^{N}P_{ij}=1.
+    \label{eq:attn-probability-properties}
+\end{equation}
+Thus, each row is a probability distribution over the key positions
+available to the corresponding query. The weights are relative: changing
+one score changes the normalized weights of the other positions in that row
+as well.
+
+A simple numerical calculation illustrates the normalization. If a query
+has two scaled scores \(s_1=0\) and \(s_2=\ln 2\), then
+\begin{equation}
+    \operatorname{softmax}(0,\ln 2)
+    =
+    \left(
+        \frac{1}{3},\frac{2}{3}
+    \right).
+    \label{eq:attn-softmax-example}
+\end{equation}
+The second key receives twice the normalized weight of the first key. This
+does not mean that its value vector is twice as large; it means that its
+contribution to the weighted aggregation is multiplied by twice the
+coefficient.
+
+For numerical stability, softmax is commonly evaluated after subtracting
+the largest score in the row. If
+\(m=\max_j s_j\), then
+\begin{equation}
+    \frac{\exp(s_j)}
+         {\sum_r\exp(s_r)}
+    =
+    \frac{\exp(s_j-m)}
+         {\sum_r\exp(s_r-m)}.
+    \label{eq:attn-stable-softmax}
+\end{equation}
+The equality follows because the same factor \(\exp(-m)\) appears in the
+numerator and denominator and cancels. The transformed exponents are
+non-positive, which reduces the risk of overflow. This identity is also
+the basis of the online softmax updates used by FlashAttention
+\parencite{dao2023flashattention2}.
+
+\paragraph{Weighted aggregation of values.}
+The attention weights determine how value vectors are combined:
+\begin{equation}
+    O=PV,
+    \qquad
+    O\in\mathbb{R}^{N\times d_v}.
+    \label{eq:attn-value-aggregation}
+\end{equation}
+For position \(i\), the output is
+\begin{equation}
+    o_i=\sum_{j=1}^{N}P_{ij}v_j.
+    \label{eq:attn-token-aggregation}
+\end{equation}
+Because the weights are non-negative and sum to one, this output is a
+convex combination of the value vectors included in that row's
+normalization. It therefore lies in their convex hull. The output is
+context-dependent because the weights depend on the current query and all
+available keys.
+
+Combining the score, normalization, and aggregation stages gives the
+scaled dot-product attention operation:
+\begin{equation}
+    \boxed{
+    \operatorname{Attention}(Q,K,V)
+    =
+    \operatorname{softmax}_{\mathrm{row}}
+    \left(
+        \frac{QK^\top}{\sqrt{d_k}}
+    \right)V
+    }.
+    \label{eq:attn-scaled-dot-product}
+\end{equation}
+The equation separates the decision about which positions to retrieve from
+the transformation of the information being retrieved.
+
+\subsection{Self-attention, cross-attention, and causal masking}
+\label{subsec:attn-self-cross-causal}
+
+\paragraph{Self-attention.}
+Self-attention is the configuration in which queries, keys, and values are
+all projected from the same input sequence:
+\begin{equation}
+    Q=XW_Q,\qquad
+    K=XW_K,\qquad
+    V=XW_V.
+    \label{eq:attn-self-qkv}
+\end{equation}
+The output is
+\begin{equation}
+    \operatorname{SelfAttention}(X)
+    =
+    \operatorname{softmax}_{\mathrm{row}}
+    \left(
+        \frac{XW_QW_K^\top X^\top}{\sqrt{d_k}}
+    \right)XW_V.
+    \label{eq:attn-self-attention}
+\end{equation}
+Every position can use its query to identify relevant positions in the same
+sequence. The interaction pattern is content-dependent because it is
+calculated from the current learned representations, rather than fixed
+solely by token distance. Self-attention is a central component of
+Transformer-based language models and is described as such in the supplied
+Transformer survey \parencite{ansar2024transformers}.
+
+\paragraph{Cross-attention.}
+Queries do not have to originate from the same sequence as keys and values.
+Let \(X_q\) be a query sequence of length \(N_q\), and let \(X_c\) be a
+context sequence of length \(N_c\). Cross-attention uses
+\begin{align}
+    Q&=X_qW_Q,
+    & Q&\in\mathbb{R}^{N_q\times d_k},
+    \label{eq:attn-cross-query}\\
+    K&=X_cW_K,
+    & K&\in\mathbb{R}^{N_c\times d_k},
+    \label{eq:attn-cross-key}\\
+    V&=X_cW_V,
+    & V&\in\mathbb{R}^{N_c\times d_v}.
+    \label{eq:attn-cross-value}
+\end{align}
+The score matrix then has shape
+\begin{equation}
+    S=QK^\top
+    \in\mathbb{R}^{N_q\times N_c},
+    \label{eq:attn-cross-score-shape}
+\end{equation}
+and the output is
+\begin{equation}
+    O=
+    \operatorname{softmax}_{\mathrm{row}}
+    \left(
+        \frac{QK^\top}{\sqrt{d_k}}
+    \right)V
+    \in\mathbb{R}^{N_q\times d_v}.
+    \label{eq:attn-cross-output}
+\end{equation}
+Each query position can therefore retrieve information from the context
+sequence even when the two sequences have different lengths. This is the
+form of attention used when a decoder retrieves information from encoder
+representations in an encoder--decoder arrangement. The supplied GQA study
+also evaluates multi-query and grouped-query variants in decoder
+cross-attention as well as decoder self-attention
+\parencite{ainslie2023gqa}.
+
+\paragraph{Causal masking.}
+Autoregressive language modeling imposes an information constraint:
+the prediction at position \(i\) must not depend on tokens at positions
+greater than \(i\). Without a mask, ordinary self-attention could use
+future tokens during training, producing information leakage relative to
+the next-token prediction task.
+
+Define the additive causal mask \(M\in\mathbb{R}^{N\times N}\) by
+\begin{equation}
+    M_{ij}
+    =
+    \begin{cases}
+        0, & j\leq i,\\
+        -\infty, & j>i.
+    \end{cases}
+    \label{eq:attn-causal-mask}
+\end{equation}
+The masked score matrix is
+\begin{equation}
+    S_{\mathrm{causal}}
+    =
+    \frac{QK^\top}{\sqrt{d_k}}+M.
+    \label{eq:attn-causal-scores}
+\end{equation}
+Because \(\exp(-\infty)=0\), future positions receive zero attention
+probability. The row-\(i\) distribution is normalized only over positions
+\(1,\ldots,i\):
+\begin{equation}
+    P_{ij}
+    =
+    \begin{cases}
+        \displaystyle
+        \frac{\exp(\widetilde S_{ij})}
+             {\sum_{r=1}^{i}\exp(\widetilde S_{ir})},
+        & j\leq i,\\[10pt]
+        0, & j>i,
+    \end{cases}
+    \label{eq:attn-causal-probabilities}
+\end{equation}
+where \(\widetilde S=QK^\top/\sqrt{d_k}\). Causal attention is consequently
+lower triangular. The first position can use only itself; the second can
+use the first and second positions; and position \(i\) can use the prefix
+ending at \(i\).
+
+The mask defines the permitted information flow. During autoregressive
+generation, the model processes the available prefix, predicts a next
+token, appends that token, and makes its representation available to
+subsequent positions. The causal restriction is therefore an architectural
+condition for autoregressive prediction, not merely a numerical
+optimization. Implementations can exploit the triangular structure by
+skipping blocks that lie entirely in the masked region, as discussed in
+the FlashAttention-2 paper \parencite{dao2023flashattention2}.
+
+\subsection{Multi-head attention}
+\label{subsec:attn-multi-head}
+
+A single attention head uses one learned query--key compatibility space and
+one value space. A language sequence, however, can contain several
+simultaneous kinds of relationships. A token may need to retrieve a nearby
+syntactic dependency, an entity introduced much earlier, or information
+associated with a task-specific pattern. Requiring all such relationships
+to be represented through one projection space may constrain the range of
+interactions the layer can learn.
+
+Multi-head attention addresses this limitation by performing several
+attention computations in parallel. Let \(H\) be the number of heads. For
+head \(h\), define
+\begin{align}
+    Q_h&=XW_Q^{(h)},&
+    K_h&=XW_K^{(h)},&
+    V_h&=XW_V^{(h)},
+    \label{eq:attn-head-qkv}\\
+    \operatorname{head}_h
+    &=
+    \operatorname{softmax}_{\mathrm{row}}
+    \left(
+        \frac{Q_hK_h^\top}{\sqrt{d_k}}+M
+    \right)V_h.
+    \label{eq:attn-head-output}
+\end{align}
+Each head has its own learned projection matrices and can therefore learn
+a different compatibility function and value transformation.
+
+In the conventional equal-dimension construction,
+\begin{equation}
+    d_k=d_v=d_h=\frac{d_{\mathrm{model}}}{H}.
+    \label{eq:attn-head-dimension}
+\end{equation}
+Each head output has shape
+\begin{equation}
+    \operatorname{head}_h
+    \in\mathbb{R}^{N\times d_h}.
+    \label{eq:attn-head-output-shape}
+\end{equation}
+The outputs are concatenated along their feature dimensions:
+\begin{equation}
+    C=
+    \operatorname{Concat}
+    \left(
+        \operatorname{head}_1,\ldots,\operatorname{head}_H
+    \right)
+    \in
+    \mathbb{R}^{N\times Hd_h}
+    =
+    \mathbb{R}^{N\times d_{\mathrm{model}}}.
+    \label{eq:attn-head-concatenation}
+\end{equation}
+A learned output projection maps the concatenated result into the model
+representation space:
+\begin{equation}
+    \boxed{
+    \operatorname{MHA}(X)=CW_O,
+    \qquad
+    W_O\in
+    \mathbb{R}^{d_{\mathrm{model}}\times d_{\mathrm{model}}}.
+    }
+    \label{eq:attn-mha-output}
+\end{equation}
+The output projection allows information from different head feature
+dimensions to be combined. The multi-head construction is summarized in
+\cref{fig:attn-multi-head}; the supplied Transformer survey describes the
+same parallel-head, concatenation, and output-projection structure
+\parencite{ansar2024transformers}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/attention_multihead}
+    \caption{Multi-head attention. The same input sequence is projected into
+    separate query, key, and value representations for each head. The head
+    outputs are concatenated and passed through a learned output projection.
+    Based on the multi-head formulation in
+    \textcite{ansar2024transformers}.}
+    \label{fig:attn-multi-head}
+\end{figure}
+% Alt text for accessibility register: A diagram showing one input matrix
+% feeding several parallel attention heads. Each head produces an output;
+% these outputs are concatenated and passed through one output projection
+% to form the multi-head attention result.
+
+\paragraph{Parameter count.}
+Assume that all heads have dimension \(d_h=d_{\mathrm{model}}/H\), and
+ignore projection biases. Across all heads, the query projection weights
+contain
+\begin{equation}
+    P_Q=H d_{\mathrm{model}}d_h
+    =d_{\mathrm{model}}^2
+    \label{eq:attn-mha-query-parameters}
+\end{equation}
+parameters. The key and value projections have the same count:
+\begin{equation}
+    P_K=P_V=d_{\mathrm{model}}^2.
+    \label{eq:attn-mha-key-value-parameters}
+\end{equation}
+The output projection contributes another \(d_{\mathrm{model}}^2\)
+parameters. Thus, under these assumptions,
+\begin{equation}
+    P_{\mathrm{MHA}}
+    =
+    P_Q+P_K+P_V+P_O
+    =
+    4d_{\mathrm{model}}^2.
+    \label{eq:attn-mha-parameter-count}
+\end{equation}
+This count is independent of \(H\) when the total model dimension remains
+fixed and the per-head dimension is reduced proportionally. Increasing
+the number of heads therefore changes the partition of the projection
+space, but does not by itself increase this idealized total projection
+parameter count.
+
+\paragraph{Arithmetic cost.}
+For one head, computing \(Q_hK_h^\top\) requires approximately
+\(2N^2d_h\) floating-point operations when a multiplication and an
+addition are counted separately. Computing \(P_hV_h\) requires another
+\(2N^2d_h\). Summing over \(H\) heads gives
+\begin{equation}
+    C_{\mathrm{attention}}
+    \approx
+    4HN^2d_h
+    =
+    4N^2d_{\mathrm{model}}
+    \label{eq:attn-mha-flops}
+\end{equation}
+for the two principal matrix multiplications of one sequence. This
+expression excludes the query, key, value, and output projections, the
+softmax, masking, and other layer operations. Its principal implication
+is the quadratic dependence on \(N\).
+
+\subsection{Backpropagation through attention}
+\label{subsec:attn-backpropagation}
+
+Attention is a differentiable computation whose projection matrices are
+learned through the loss function. The backward pass determines how the
+loss changes when the query, key, and value representations change. This
+derivation also explains why storing or recomputing attention probabilities
+is important for memory-efficient training.
+
+Consider the forward equations
+\begin{equation}
+    S=\frac{QK^\top}{\sqrt{d_k}},
+    \qquad
+    P=\operatorname{softmax}_{\mathrm{row}}(S),
+    \qquad
+    O=PV.
+    \label{eq:attn-backward-forward}
+\end{equation}
+Let \(\mathcal{L}\) be a scalar loss and define the upstream gradient
+\begin{equation}
+    G=\frac{\partial\mathcal{L}}{\partial O}
+    \in\mathbb{R}^{N\times d_v}.
+    \label{eq:attn-upstream-gradient}
+\end{equation}
+
+The value gradient follows directly from \(O=PV\):
+\begin{equation}
+    \frac{\partial\mathcal{L}}{\partial V}
+    =
+    P^\top G.
+    \label{eq:attn-gradient-value}
+\end{equation}
+The probability gradient is
+\begin{equation}
+    \frac{\partial\mathcal{L}}{\partial P}
+    =
+    GV^\top
+    \in\mathbb{R}^{N\times N}.
+    \label{eq:attn-gradient-probability}
+\end{equation}
+
+The softmax derivative must account for the coupling introduced by
+normalization. For one row \(p=\operatorname{softmax}(s)\), the Jacobian
+is
+\begin{equation}
+    J_{\mathrm{softmax}}(p)
+    =
+    \operatorname{diag}(p)-pp^\top.
+    \label{eq:attn-softmax-jacobian}
+\end{equation}
+This follows from
+\begin{equation}
+    \frac{\partial p_j}{\partial s_k}
+    =
+    p_j(\delta_{jk}-p_k),
+    \label{eq:attn-softmax-component-derivative}
+\end{equation}
+where \(\delta_{jk}\) is the Kronecker delta. If
+\(D_P=\partial\mathcal{L}/\partial P\), the score gradient for each row is
+\begin{equation}
+    d s
+    =
+    \left(
+        \operatorname{diag}(p)-pp^\top
+    \right)d p.
+    \label{eq:attn-softmax-backward}
+\end{equation}
+Equivalently, in component form,
+\begin{equation}
+    \frac{\partial\mathcal{L}}{\partial s_j}
+    =
+    p_j
+    \left(
+        \frac{\partial\mathcal{L}}{\partial p_j}
+        -
+        \sum_{r=1}^{N}
+        p_r\frac{\partial\mathcal{L}}{\partial p_r}
+    \right).
+    \label{eq:attn-softmax-backward-component}
+\end{equation}
+The gradient of one score therefore depends on the probability and
+upstream gradient of every score in the same row.
+
+Let
+\(D=\partial\mathcal{L}/\partial S\) denote the matrix formed by applying
+this row-wise derivative. The gradients of the scaled query--key product
+are
+\begin{align}
+    \frac{\partial\mathcal{L}}{\partial Q}
+    &=
+    \frac{DK}{\sqrt{d_k}},
+    \label{eq:attn-gradient-query}\\
+    \frac{\partial\mathcal{L}}{\partial K}
+    &=
+    \frac{D^\top Q}{\sqrt{d_k}}.
+    \label{eq:attn-gradient-key}
+\end{align}
+For a masked score, the corresponding probability is zero and its
+gradient contribution is zero. The complete backward pass is consequently
+\begin{align}
+    dV &= P^\top G,
+    \label{eq:attn-backward-dv}\\
+    dP &= GV^\top,
+    \label{eq:attn-backward-dp}\\
+    dS &= \operatorname{SoftmaxBackward}(P,dP),
+    \label{eq:attn-backward-ds}\\
+    dQ &= \frac{dSK}{\sqrt{d_k}},
+    \label{eq:attn-backward-dq}\\
+    dK &= \frac{dS^\top Q}{\sqrt{d_k}}.
+    \label{eq:attn-backward-dk}
+\end{align}
+
+The gradients then propagate to the learned projection matrices. Since
+\(Q=XW_Q\), \(K=XW_K\), and \(V=XW_V\), the chain rule gives
+\begin{align}
+    \frac{\partial\mathcal{L}}{\partial W_Q}
+    &=
+    X^\top\frac{\partial\mathcal{L}}{\partial Q},
+    \label{eq:attn-gradient-wq}\\
+    \frac{\partial\mathcal{L}}{\partial W_K}
+    &=
+    X^\top\frac{\partial\mathcal{L}}{\partial K},
+    \label{eq:attn-gradient-wk}\\
+    \frac{\partial\mathcal{L}}{\partial W_V}
+    &=
+    X^\top\frac{\partial\mathcal{L}}{\partial V}.
+    \label{eq:attn-gradient-wv}
+\end{align}
+The contribution to the input gradient through these three projections is
+\begin{equation}
+    \frac{\partial\mathcal{L}}{\partial X}
+    =
+    \frac{\partial\mathcal{L}}{\partial Q}W_Q^\top
+    +
+    \frac{\partial\mathcal{L}}{\partial K}W_K^\top
+    +
+    \frac{\partial\mathcal{L}}{\partial V}W_V^\top.
+    \label{eq:attn-gradient-input}
+\end{equation}
+For multi-head attention, the output projection combines the
+head-specific contributions before they return to the shared input
+representation. Training therefore adjusts both the information-selection
+spaces and the value transformations. The same backward dependencies
+motivate the recomputation strategy used by FlashAttention
+\parencite{dao2023flashattention2}.
+
+\subsection{Attention-head interpretation and functional specialization}
+\label{subsec:attn-head-interpretability}
+
+The multi-head formulation explains how several attention computations
+can operate in parallel, but it does not establish what a particular head
+has learned to do. Investigating that question belongs to mechanistic
+interpretability: the study of internal computations through parameters,
+activations, intermediate representations, and controlled interventions.
+The supplied survey by \textcite{zheng2024attentionheads} organizes
+reported attention-head functions through a four-stage framework:
+Knowledge Recalling, In-Context Identification, Latent Reasoning, and
+Expression Preparation. The framework is a way to organize experimental
+findings; it is not evidence that a Transformer contains four explicit
+modules corresponding to human cognitive stages.
+
+\paragraph{The QK and OV transformations.}
+For one head \(h\), let \(W_Q^{(h)}\), \(W_K^{(h)}\), and \(W_V^{(h)}\)
+be its projection matrices. Let \(W_O^{(h)}\) denote the slice of the
+multi-head output projection that maps this head's output into the model
+dimension. The head's contribution can be expressed as
+\begin{equation}
+    \operatorname{Head}_h(X)
+    =
+    \operatorname{softmax}
+    \left(
+        \frac{
+            XW_Q^{(h)}W_K^{(h)\top}X^\top
+        }{\sqrt{d_h}}+M
+    \right)
+    XW_V^{(h)}W_O^{(h)}.
+    \label{eq:attn-head-expanded}
+\end{equation}
+This expression exposes two composite transformations. The query--key
+matrix is
+\begin{equation}
+    W_{QK}^{(h)}
+    =
+    W_Q^{(h)}W_K^{(h)\top},
+    \label{eq:attn-qk-matrix}
+\end{equation}
+which determines how token representations are compared to produce
+attention scores. The value--output matrix is
+\begin{equation}
+    W_{OV}^{(h)}
+    =
+    W_V^{(h)}W_O^{(h)},
+    \label{eq:attn-ov-matrix}
+\end{equation}
+which determines how attended information is transformed before it is
+written into the model representation space. The QK transformation is
+therefore associated with information selection, while the OV
+transformation is associated with information transfer. The distinction
+is central to the interpretability framework in
+\textcite{zheng2024attentionheads}.
+
+\paragraph{Residual-stream contribution.}
+An attention sublayer usually adds an update to the representation
+carried through the Transformer by residual connections. Omitting
+architecture-dependent normalization details, this update can be written as
+\begin{equation}
+    R_{\ell}^{\mathrm{after}}
+    =
+    R_{\ell}^{\mathrm{before}}
+    +
+    \sum_{h=1}^{H}\operatorname{Head}_{\ell,h}(R_{\ell}^{\mathrm{before}}).
+    \label{eq:attn-residual-stream}
+\end{equation}
+The residual stream is the shared representation pathway through which
+information from different heads and layers can accumulate. A head reads
+the representation available in this stream, performs its query--key
+selection and value transformation, and writes an update back into the
+stream. Subsequent heads and layers can then use the modified
+representation. The exact placement of normalization and the ordering of
+sublayers depend on the Transformer variant; the equation isolates the
+residual contribution rather than specifying one universal block layout.
+
+\paragraph{Knowledge Recalling.}
+The Knowledge Recalling stage concerns retrieval of information associated
+with the model's parametric knowledge. The survey identifies the Memory
+Head as an example: it can retrieve attributes associated with entities
+present in the input and write the retrieved information into the residual
+stream. In task-specific settings, the survey also describes Constant
+Heads, Single Letter Heads, and Negative Heads in multiple-choice or
+binary-decision contexts. These examples illustrate that some heads are
+associated with retrieval from learned parameters, while others are
+associated with the structure of a particular task
+\parencite{zheng2024attentionheads}.
+
+\paragraph{In-Context Identification.}
+The In-Context Identification stage concerns identifying structural,
+syntactic, and semantic information in the current context. The survey
+discusses Previous Heads and Positional Heads as examples that track
+positional relationships, Duplicate Heads as heads that respond to
+repeated content, and Retrieval Heads as heads that locate specific
+information in longer contexts. Syntactic Heads are reported to identify
+relationships such as subjects, objects, and modifiers. Subword Merge
+Heads are associated with integrating subword representations, while
+Name Mover and Letter Mover Heads transfer entity or letter information
+toward positions used in subsequent computation. Context Heads and
+Content Gatherer Heads identify task-relevant content; Sentiment
+Summarizers and Semantic Induction Heads are associated with sentiment
+and semantic relationships. These are reported functional descriptions
+from the surveyed studies, not universal properties of every model's
+attention heads \parencite{zheng2024attentionheads}.
+
+\paragraph{Latent Reasoning.}
+The Latent Reasoning stage concerns the integration of information
+identified in the context and the use of learned patterns to produce
+intermediate conclusions. Induction Heads are a representative example.
+The survey describes a pattern of the form
+\begin{equation}
+    \ldots [A][B]\ldots[A],
+    \label{eq:attn-induction-pattern}
+\end{equation}
+where the first occurrence of \([A]\) is followed by \([B]\). An Induction
+Head can use information about the earlier continuation to support the
+prediction of \([B]\) after the later occurrence of \([A]\). The survey
+also discusses Summary Readers and Function Vectors in task recognition,
+as well as heads associated with truthfulness, accuracy, consistency,
+iteration, successor operations, and inhibition of selected signals.
+These examples show that head functions can involve both the retrieval
+and combination of information and the suppression of competing
+information \parencite{zheng2024attentionheads}.
+
+\paragraph{Expression Preparation.}
+The Expression Preparation stage concerns preparing information for
+expression in the model's output. The survey describes Mixed Heads as
+aggregating information passed from other heads, Amplification and
+Correct Heads as strengthening signals associated with a selected answer,
+and Coherence and Faithfulness Heads as being associated with linguistic
+consistency and alignment between reasoning-related information and
+instructions. The framework also allows that some tasks may not require
+a distinct expression-preparation operation: information already present
+in the residual stream may be sufficient to determine the next output
+token \parencite{zheng2024attentionheads}.
+
+The four stages can interact and need not occur as a rigid one-way
+sequence. A model may return to contextual identification after retrieving
+knowledge, or retrieve additional information during reasoning. The
+framework is therefore best interpreted as a descriptive organization of
+reported head functions rather than a literal computational pipeline.
+\cref{fig:attn-head-framework} summarizes the four categories and
+illustrative functions discussed in the survey.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/attention_head_framework}
+    \caption{Four-stage organization of reported attention-head functions:
+    Knowledge Recalling, In-Context Identification, Latent Reasoning, and
+    Expression Preparation. The categories are an interpretability
+    framework and may interact rather than forming a rigid sequential
+    pipeline. Based on \textcite{zheng2024attentionheads}.}
+    \label{fig:attn-head-framework}
+\end{figure}
+% Alt text for accessibility register: Four connected boxes show Knowledge
+% Recalling, In-Context Identification, Latent Reasoning, and Expression
+% Preparation. Each box contains representative attention-head functions;
+% arrows indicate that information can move between stages.
+
+\paragraph{Experimental investigation.}
+The survey describes experiments that test whether a proposed head
+function contributes to model behavior. Activation patching replaces
+selected activations with values from another input, a baseline, or a
+perturbed run, and measures the effect on the output. Ablation instead removes or suppresses a component and
+observes the resulting behavioral change. The two methods are related but
+not identical: patching substitutes an activation, whereas ablation removes
+a component's contribution. The survey also describes the logit lens,
+which uses the unembedding transformation to map intermediate
+representations to vocabulary logits and thereby examine how an
+intermediate state relates to candidate output tokens
+\parencite{zheng2024attentionheads}.
+
+These interventions provide evidence about the role of a component under
+the tested conditions. They do not, by themselves, establish that a
+proposed function generalizes to every task, model family, or context.
+The survey identifies generalizability, transferability, interactions
+among multiple heads, and the need for stronger theoretical accounts as
+important limitations in the study of attention-head functions
+\parencite{zheng2024attentionheads}.
+
+\subsection{Computational and memory complexity of dense attention}
+\label{subsec:attn-computational-memory-complexity}
+
+The dimensions of the score and probability matrices explain the principal
+scaling limitation of dense attention. For one head, the two main matrix
+multiplications are
+\begin{equation}
+    QK^\top:
+    (N\times d_k)(d_k\times N)
+    \longrightarrow
+    N\times N
+    \label{eq:attn-complexity-score-shape}
+\end{equation}
+and
+\begin{equation}
+    PV:
+    (N\times N)(N\times d_v)
+    \longrightarrow
+    N\times d_v.
+    \label{eq:attn-complexity-value-shape}
+\end{equation}
+Their combined arithmetic cost is
+\begin{equation}
+    \mathcal{O}(N^2d_k+N^2d_v).
+    \label{eq:attn-complexity-one-head}
+\end{equation}
+When \(d_k=d_v=d_h\), this is
+\begin{equation}
+    \mathcal{O}(N^2d_h)
+    \label{eq:attn-complexity-one-head-equal}
+\end{equation}
+up to constant factors. Across \(H\) heads with
+\(Hd_h=d_{\mathrm{model}}\), the leading sequence-length dependence is
+\begin{equation}
+    \boxed{
+    \mathcal{O}(N^2d_{\mathrm{model}})
+    }.
+    \label{eq:attn-complexity-mha}
+\end{equation}
+
+The quadratic dependence can be illustrated numerically. If the sequence
+length increases from \(N=2{,}048\) to \(N=8{,}192\), the ratio of the
+numbers of pairwise positions is
+\begin{equation}
+    \frac{8{,}192^2}{2{,}048^2}
+    =
+    4^2
+    =
+    16.
+    \label{eq:attn-quadratic-example}
+\end{equation}
+Thus, at fixed head and model dimensions, the principal dense-attention
+matrix multiplications require sixteen times as much arithmetic after a
+fourfold increase in sequence length.
+
+\paragraph{Intermediate memory.}
+The score matrix \(S\) and probability matrix \(P\) each contain \(N^2\)
+elements per head and sequence. If a conventional implementation
+materializes both matrices for a batch of \(B\) sequences and \(H\) heads,
+the storage for these two intermediates is
+\begin{equation}
+    M_{\mathrm{intermediate}}
+    =
+    2BHN^2b
+    \quad\text{bytes},
+    \label{eq:attn-intermediate-memory}
+\end{equation}
+where \(b\) is the number of bytes per stored element. The precise peak
+allocation depends on the implementation and which intermediates are
+retained for the backward pass, but the quadratic dependence on \(N\)
+remains the central difficulty. The FlashAttention-2 paper identifies
+materialization of the score and probability matrices in high-bandwidth
+memory as a major source of memory use and data movement
+\parencite{dao2023flashattention2}.
+
+\paragraph{The key--value cache during autoregressive inference.}
+Training processes multiple positions in parallel subject to the causal
+mask. Autoregressive inference instead generates one token at a time.
+At each decoding step, the new query must interact with the keys and
+values of preceding positions. Recomputing all preceding key and value
+projections at every step would repeat work, so decoder implementations
+commonly retain the previously computed keys and values in a
+key--value cache, or KV cache.
+
+Let \(L\) be the number of Transformer layers, \(B\) the batch size,
+\(N\) the number of cached positions, \(H_{\mathrm{KV}}\) the number of
+key--value heads, \(d_h\) the dimension of each such head, and \(b\) the
+number of bytes per element. The cache contains keys and values, so its
+memory requirement is
+\begin{equation}
+    \boxed{
+    M_{\mathrm{KV}}
+    =
+    2LBNH_{\mathrm{KV}}d_hb
+    }.
+    \label{eq:attn-kv-cache-memory}
+\end{equation}
+The cache grows linearly with sequence length, but its total size can be
+large when the model has many layers, a large batch, or many key--value
+heads. During decoding, the keys and values must also be transferred from
+memory for the current query computation. Consequently, inference speed
+can be constrained by memory bandwidth, not only by arithmetic throughput.
+This is the motivation for reducing the number of key--value heads in
+multi-query and grouped-query attention
+\parencite{ainslie2023gqa}.
+
+\subsection{Multi-query and grouped-query attention}
+\label{subsec:attn-mqa-gqa}
+
+\paragraph{Multi-query attention.}
+Conventional multi-head attention uses a separate key and value head for
+each query head. Multi-query attention (MQA) retains multiple query heads
+but shares one key head and one value head across all of them. If there
+are \(H\) query heads, then
+\begin{equation}
+    H_Q=H,
+    \qquad
+    H_K=H_V=1.
+    \label{eq:attn-mqa-head-counts}
+\end{equation}
+The output of query head \(h\) is
+\begin{equation}
+    \operatorname{head}_h
+    =
+    \operatorname{softmax}
+    \left(
+        \frac{Q_hK^\top}{\sqrt{d_h}}+M
+    \right)V.
+    \label{eq:attn-mqa-head}
+\end{equation}
+The query projection remains head-specific, but the same key and value
+representations are used by all query heads.
+
+For conventional MHA, the KV cache contains
+\(2LBNHd_hb\) bytes. For MQA, it contains
+\(2LBNd_hb\) bytes. Under the same dimensions, the reduction factor is
+\begin{equation}
+    R_{\mathrm{MQA}}
+    =
+    \frac{2LBNHd_hb}{2LBNd_hb}
+    =
+    H.
+    \label{eq:attn-mqa-cache-reduction}
+\end{equation}
+This reduction decreases the amount of key--value data that must be stored
+and loaded during autoregressive inference. It does not remove the
+query-head computations. Sharing key and value representations can,
+however, reduce representational flexibility and may cause quality
+degradation or training instability. These trade-offs motivate an
+intermediate design \parencite{ainslie2023gqa}.
+
+\paragraph{Grouped-query attention.}
+Grouped-query attention (GQA) retains \(H\) query heads but partitions
+them into \(G\) groups, each sharing one key head and one value head.
+Assume \(G\) divides \(H\). Each group then contains \(H/G\) query heads:
+\begin{equation}
+    H_Q=H,
+    \qquad
+    H_K=H_V=G.
+    \label{eq:attn-gqa-head-counts}
+\end{equation}
+Let \(g(h)\) identify the key--value group assigned to query head \(h\).
+The head output is
+\begin{equation}
+    \operatorname{head}_h
+    =
+    \operatorname{softmax}
+    \left(
+        \frac{
+            Q_hK_{g(h)}^\top
+        }{\sqrt{d_h}}+M
+    \right)V_{g(h)}.
+    \label{eq:attn-gqa-head}
+\end{equation}
+The KV-cache memory becomes
+\begin{equation}
+    M_{\mathrm{KV,GQA}}
+    =
+    2LBNGd_hb.
+    \label{eq:attn-gqa-cache}
+\end{equation}
+Relative to MHA, the cache reduction factor is
+\begin{equation}
+    R_{\mathrm{GQA}}
+    =
+    \frac{H}{G}.
+    \label{eq:attn-gqa-reduction}
+\end{equation}
+The limiting cases recover the two familiar architectures:
+\begin{equation}
+    G=1
+    \Longrightarrow
+    \operatorname{GQA}=\operatorname{MQA},
+    \qquad
+    G=H
+    \Longrightarrow
+    \operatorname{GQA}=\operatorname{MHA}.
+    \label{eq:attn-gqa-boundaries}
+\end{equation}
+Intermediate values of \(G\) trade key--value memory against the number
+of independently represented key--value groups.
+
+For example, if a model has \(H=32\) query heads and uses \(G=8\)
+key--value groups, then
+\begin{equation}
+    R_{\mathrm{GQA}}=\frac{32}{8}=4.
+    \label{eq:attn-gqa-numerical-example}
+\end{equation}
+The KV cache is one quarter the size of the corresponding MHA cache,
+while remaining eight times the size of an MQA cache under the same
+head-dimension assumptions. The query-head count remains 32.
+
+\paragraph{Converting and uptraining existing checkpoints.}
+\textcite{ainslie2023gqa} propose converting a multi-head checkpoint into
+an MQA or GQA checkpoint and then performing additional pre-training so
+that the model can adapt to the changed key--value structure. For GQA,
+the original key and value projection matrices are mean-pooled within
+each new group. If \(\mathcal{G}_g\) is the set of original heads assigned
+to group \(g\), the initialization is
+\begin{align}
+    W_K^{(g)}
+    &=
+    \frac{G}{H}
+    \sum_{h\in\mathcal{G}_g}W_K^{(h)},
+    \label{eq:attn-gqa-key-mean}\\
+    W_V^{(g)}
+    &=
+    \frac{G}{H}
+    \sum_{h\in\mathcal{G}_g}W_V^{(h)}.
+    \label{eq:attn-gqa-value-mean}
+\end{align}
+The group mean retains contributions from the original heads rather than
+selecting one head or randomly initializing the new shared projection.
+The converted checkpoint is then uptrained using a fraction of the
+original pre-training procedure. The authors report experiments with an
+uptraining proportion of five percent of the original pre-training steps.
+
+Their T5-XXL experiments report an inference time of \(1.51\) ms per
+sample and an average task score of \(47.2\) for MHA-XXL. The uptrained
+MQA-XXL model reports \(0.24\) ms and \(46.6\), while GQA-8-XXL reports
+\(0.28\) ms and \(47.1\). These results illustrate the reported trade-off:
+GQA-8 approaches the MHA-XXL average score while retaining inference
+time close to MQA. The values are specific to the models, tasks, and
+hardware configuration used in the study; they are not universal
+performance guarantees \parencite{ainslie2023gqa}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Selected T5-XXL results reported for MHA, MQA, and GQA.
+    Inference time is the reported average time per sample; average
+    performance is the reported average over the evaluated tasks.
+    Source: \textcite{ainslie2023gqa}, Table 1.}
+    \label{tab:attn-gqa-results}
+    \small
+    \begin{tabularx}{\textwidth}{l c c X}
+        \toprule
+        Configuration
+        & Inference time (ms)
+        & Average performance
+        & Key--value structure \\
+        \midrule
+        MHA-XXL
+        & 1.51
+        & 47.2
+        & One key--value head per query head \\
+        MQA-XXL
+        & 0.24
+        & 46.6
+        & One shared key--value head \\
+        GQA-8-XXL
+        & 0.28
+        & 47.1
+        & Eight shared key--value groups \\
+        \bottomrule
+    \end{tabularx}
+    \normalsize
+\end{table}
+
+GQA is therefore a compact-attention strategy: it reduces the amount of
+key--value information stored in the cache through sharing, while retaining
+the dense query-to-key interaction pattern. It should not be confused
+with sparse attention, which omits selected query--key interactions, or
+with linear attention, which changes the mathematical formulation of
+attention \parencite{ainslie2023gqa,sun2026efficientattention}.
+
+\subsection{FlashAttention and FlashAttention-2}
+\label{subsec:attn-flashattention}
+
+The preceding methods address the cost of retaining key--value
+representations during inference. A different problem occurs when the
+attention score and probability matrices are materialized during training
+or prompt processing. FlashAttention addresses this problem without
+approximating the dense attention result. Its central idea is to reorganize
+the computation to reduce data movement between high-bandwidth memory
+(HBM) and fast on-chip storage.
+
+\paragraph{Memory hierarchy and the I/O bottleneck.}
+GPUs contain several levels of memory with different capacities and
+bandwidths. HBM provides comparatively large storage, while on-chip SRAM
+is smaller and faster. The FlashAttention-2 paper uses NVIDIA A100
+hardware as an example and reports HBM bandwidth of approximately
+\(1.5\)--\(2.0\) TB/s and an estimated on-chip SRAM bandwidth of
+approximately \(19\) TB/s. It also describes approximately \(192\) KB
+of SRAM per streaming multiprocessor in the hardware setting considered
+by the paper. These figures are hardware-specific examples, but they
+illustrate why repeated transfers of large intermediate matrices can
+limit practical attention speed \parencite{dao2023flashattention2}.
+
+A conventional implementation may compute \(S=QK^\top\), write \(S\)
+to HBM, read it for softmax, write \(P\) to HBM, and read \(P\) again
+for \(O=PV\). The score and probability matrices each have
+\(N^2\) entries per head. The repeated writes and reads create substantial
+memory traffic, and the probability matrix may also need to be retained
+for backpropagation. The runtime is consequently influenced by both
+arithmetic and memory movement.
+
+\paragraph{Tiling.}
+FlashAttention uses tiling to keep intermediate blocks in on-chip SRAM.
+The query matrix is divided into row blocks, and the key and value
+matrices are divided into corresponding blocks. For a query block
+\(Q_i\) and key block \(K_j\), the local score block is
+\begin{equation}
+    S_{ij}
+    =
+    \frac{Q_iK_j^\top}{\sqrt{d_k}},
+    \qquad
+    S_{ij}\in\mathbb{R}^{B_r\times B_c},
+    \label{eq:attn-flash-score-tile}
+\end{equation}
+where \(B_r\) and \(B_c\) are the query-row and key-column block sizes.
+The corresponding value block is
+\(V_j\in\mathbb{R}^{B_c\times d_v}\). The algorithm loads blocks from
+HBM, computes their contribution in SRAM, updates a running output, and
+moves to the next block. It avoids writing the full \(N\times N\) score
+and probability matrices to HBM.
+
+The blocks cannot simply be softmax-normalized independently and then
+concatenated. The softmax denominator for a query row depends on every
+permitted key position, including keys in blocks that have not yet been
+processed. FlashAttention resolves this dependency through online
+softmax.
+
+\paragraph{Online softmax derivation.}
+Consider one query-row block and suppose that key--value blocks are
+processed in sequence. For a given query row, maintain a running maximum
+\(m\), a running normalization denominator \(\ell\), and an
+unnormalized value accumulator \(U\). Before processing any key block,
+initialize
+\begin{equation}
+    m^{(0)}=-\infty,
+    \qquad
+    \ell^{(0)}=0,
+    \qquad
+    U^{(0)}=0.
+    \label{eq:attn-online-softmax-initialization}
+\end{equation}
+For the next score block \(S^{(j)}\), update the running maximum:
+\begin{equation}
+    m^{(j)}
+    =
+    \max\left(
+        m^{(j-1)},
+        \operatorname{rowmax}(S^{(j)})
+    \right).
+    \label{eq:attn-online-softmax-max}
+\end{equation}
+The denominator is updated by rescaling the previous contribution to the
+new maximum and adding the current block's contribution:
+\begin{equation}
+    \boxed{
+    \ell^{(j)}
+    =
+    e^{m^{(j-1)}-m^{(j)}}\ell^{(j-1)}
+    +
+    \operatorname{rowsum}
+    \left(
+        e^{S^{(j)}-m^{(j)}}
+    \right)
+    }.
+    \label{eq:attn-online-softmax-denominator}
+\end{equation}
+The exponentials, maxima, and row sums are evaluated row-wise. The
+unnormalized value accumulator is updated as
+\begin{equation}
+    \boxed{
+    U^{(j)}
+    =
+    e^{m^{(j-1)}-m^{(j)}}U^{(j-1)}
+    +
+    e^{S^{(j)}-m^{(j)}}V_j
+    }.
+    \label{eq:attn-online-softmax-output}
+\end{equation}
+The rescaling factor is necessary because the maximum used to stabilize
+the exponential may change when a new block is introduced. After all
+key--value blocks have been processed, the exact normalized output is
+\begin{equation}
+    O=\frac{U^{(T_c)}}{\ell^{(T_c)}},
+    \label{eq:attn-online-softmax-final}
+\end{equation}
+where \(T_c\) is the number of key--value blocks. The division is
+performed row-wise and broadcast across the value dimension.
+
+These updates are algebraically equivalent to full softmax attention.
+They change the order in which intermediate quantities are computed and
+stored, not the attention function itself. The running maximum also
+preserves the numerical-stability benefit of max-shifted softmax.
+\cref{fig:attn-flash-tiling} illustrates the blockwise computation and
+the compact online-softmax state
+\parencite{dao2023flashattention2}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/attention_flash_tiling}
+    \caption{Conceptual blockwise attention computation. Query, key, and
+    value tiles are loaded into on-chip memory; each score tile updates
+    the running maximum, normalization denominator, and value accumulator.
+    The full score and probability matrices are not materialized in HBM.
+    Based on \textcite{dao2023flashattention2}.}
+    \label{fig:attn-flash-tiling}
+\end{figure}
+% Alt text for accessibility register: Query, key, and value matrices are
+% shown as blocks. A query block interacts with successive key and value
+% blocks. Each interaction updates running maximum m, denominator l, and
+% output accumulator U; the final output is U divided by l.
+
+\paragraph{Backward pass and recomputation.}
+A conventional backward pass uses the attention probabilities to calculate
+gradients. FlashAttention avoids storing the complete probability matrix
+in HBM. Instead, it retains compact normalization information and
+recomputes the necessary score and probability blocks during the backward
+pass. This trades additional arithmetic for reduced memory traffic and
+intermediate storage. The gradients are still those of the exact attention
+operation:
+\begin{align}
+    dV&=P^\top dO,
+    \label{eq:attn-flash-backward-dv}\\
+    dP&=dOV^\top,
+    \label{eq:attn-flash-backward-dp}\\
+    dS&=\operatorname{SoftmaxBackward}(P,dP),
+    \label{eq:attn-flash-backward-ds}\\
+    dQ&=\frac{dSK}{\sqrt{d_k}},
+    \qquad
+    dK=\frac{dS^\top Q}{\sqrt{d_k}}.
+    \label{eq:attn-flash-backward-dqdk}
+\end{align}
+The algorithm recomputes local blocks when required rather than retaining
+all \(N\times N\) intermediates. The additional memory required by the
+attention operation is thereby reduced from quadratic to linear in
+sequence length, apart from the storage of the input and output tensors
+\parencite{dao2023flashattention2}.
+
+\paragraph{FlashAttention-2 and GPU work partitioning.}
+FlashAttention-2 improves the work distribution of the original
+algorithm. The paper identifies three related changes. It reduces
+non-matrix-multiplication operations, parallelizes attention across
+sequence blocks even when a single head is being processed, and changes
+the division of work among warps within a thread block to reduce
+communication through shared memory.
+
+The distinction between matrix and non-matrix operations matters because
+modern GPUs provide specialized matrix-multiplication hardware. The
+FlashAttention-2 paper gives an A100 example in which the reported
+theoretical throughput for FP16/BF16 matrix multiplication is
+\(312\) TFLOPs/s, compared with \(19.5\) TFLOPs/s for non-matrix
+FP32 operations. The ratio is
+\begin{equation}
+    \frac{312}{19.5}=16.
+    \label{eq:attn-a100-throughput-ratio}
+\end{equation}
+This comparison is specific to the hardware and precisions reported in
+the paper. It illustrates why a kernel that reduces non-matrix work and
+increases the fraction of time spent in optimized matrix operations can
+achieve better hardware utilization.
+
+The original FlashAttention work distributes computation across batch
+and head dimensions. FlashAttention-2 additionally partitions work along
+the sequence dimension, increasing the number of independent thread
+blocks when batch size or head count is small. Within a thread block, it
+also changes the warp-level partitioning to reduce shared-memory
+communication and synchronization. For causal attention, blocks entirely
+outside the permitted triangular region can be skipped rather than
+computed and discarded.
+
+The paper reports approximately a twofold speedup over the original
+FlashAttention in its evaluated settings, with \(50\)--\(73\%\) of
+the theoretical maximum FLOPs/s on A100. In end-to-end GPT-style
+training, it reports up to \(225\) TFLOPs/s per A100 GPU and
+approximately \(72\%\) model FLOPs utilization. These are experimental
+results tied to the implementations and hardware in the paper; they
+should not be interpreted as fixed speedups for every model or device
+\parencite{dao2023flashattention2}.
+
+The central distinction is that FlashAttention-2 does not remove the
+quadratic arithmetic complexity of dense attention. It changes the
+execution schedule, intermediate storage, and work partitioning so that
+the same mathematical operation is performed with less data movement
+and better hardware utilization.
+
+\subsection{Linear attention}
+\label{subsec:attn-linear-attention}
+
+FlashAttention improves the execution of dense attention without changing
+its mathematical result. Linear attention takes a different approach:
+it changes the formulation so that the sequence-length dependence can be
+linear rather than quadratic. The supplied survey by
+\textcite{sun2026efficientattention} organizes linear attention into
+kernelized methods, recurrent methods with forgetting mechanisms, and
+methods that interpret the recurrent state as a fast-weight or
+in-context-learning mechanism.
+
+\paragraph{Kernelized reformulation.}
+Consider one query \(q_i\) and the sequence of keys and values.
+In the efficient-attention survey's notation, the softmax kernel
+contributes weights proportional to \(\exp(q_i k_j^\top)\). Kernelized linear attention seeks a feature
+mapping
+\begin{equation}
+    \phi:\mathbb{R}^{d_k}\longrightarrow\mathbb{R}^{r}
+    \label{eq:attn-linear-feature-map}
+\end{equation}
+such that
+\begin{equation}
+    \exp(q_i k_j^\top)
+    \approx
+    \phi(q_i)^\top\phi(k_j).
+    \label{eq:attn-linear-kernel-approximation}
+\end{equation}
+If scaled dot products are used, the scaling can be incorporated into
+the arguments of the feature map. The essential requirement is that
+the similarity kernel be approximated by an inner product in a feature
+space.
+
+Substituting the feature approximation into normalized attention gives
+\begin{equation}
+    o_i
+    \approx
+    \frac{
+        \sum_{j=1}^{N}
+        \phi(q_i)^\top\phi(k_j)v_j
+    }{
+        \sum_{j=1}^{N}
+        \phi(q_i)^\top\phi(k_j)
+    }.
+    \label{eq:attn-linear-substitution}
+\end{equation}
+Since \(\phi(q_i)\) does not depend on \(j\), associativity and
+distributivity allow it to be factored out:
+\begin{align}
+    o_i
+    &\approx
+    \frac{
+        \phi(q_i)^\top
+        \left(
+            \sum_{j=1}^{N}\phi(k_j)v_j^\top
+        \right)
+    }{
+        \phi(q_i)^\top
+        \left(
+            \sum_{j=1}^{N}\phi(k_j)
+        \right)
+    }.
+    \label{eq:attn-linear-reordered}
+\end{align}
+Define the aggregated key--value matrix and key sum as
+\begin{align}
+    A&=
+    \sum_{j=1}^{N}\phi(k_j)v_j^\top,
+    & A&\in\mathbb{R}^{r\times d_v},
+    \label{eq:attn-linear-state-matrix}\\
+    z&=
+    \sum_{j=1}^{N}\phi(k_j),
+    & z&\in\mathbb{R}^{r}.
+    \label{eq:attn-linear-normalizer-state}
+\end{align}
+Then
+\begin{equation}
+    \boxed{
+    o_i
+    \approx
+    \frac{\phi(q_i)^\top A}
+         {\phi(q_i)^\top z}
+    }.
+    \label{eq:attn-linear-output-state}
+\end{equation}
+The numerator and denominator are evaluated using the aggregated state.
+The full \(N\times N\) attention matrix is not constructed.
+
+For the complete sequence, let
+\begin{equation}
+    \Phi_Q=\phi(Q)\in\mathbb{R}^{N\times r},
+    \qquad
+    \Phi_K=\phi(K)\in\mathbb{R}^{N\times r}.
+    \label{eq:attn-linear-feature-matrices}
+\end{equation}
+The output can be written as
+\begin{equation}
+    \boxed{
+    O
+    =
+    \frac{
+        \Phi_Q(\Phi_K^\top V)
+    }{
+        \Phi_Q(\Phi_K^\top\mathbf{1}_N)
+    }
+    }.
+    \label{eq:attn-linear-matrix-form}
+\end{equation}
+Here, \(\mathbf{1}_N\) is an \(N\)-dimensional vector of ones, and the
+division is row-wise, with the denominator broadcast over the value
+dimension. The matrix product \(\Phi_K^\top V\) has shape
+\(r\times d_v\), while \(\Phi_Q(\Phi_K^\top V)\) has shape
+\(N\times d_v\).
+
+The first product costs
+\(\mathcal{O}(Nrd_v)\), and the multiplication by \(\Phi_Q\) costs
+another \(\mathcal{O}(Nrd_v)\). The denominator costs
+\(\mathcal{O}(Nr)\). The total is therefore
+\begin{equation}
+    \mathcal{O}(Nrd_v+Nr),
+    \label{eq:attn-linear-complexity}
+\end{equation}
+which is linear in \(N\) when the feature and value dimensions are fixed.
+If \(r=d_v=d_h\), the leading cost is
+\(\mathcal{O}(Nd_h^2)\). The reduction in sequence-length complexity
+comes from changing the order of matrix multiplication and avoiding
+the \(N\times N\) interaction matrix
+\parencite{sun2026efficientattention}.
+
+\paragraph{Feature-map choices and approximation.}
+The feature map determines how well the linearized computation
+approximates the original softmax kernel. The survey describes Linear
+Transformer as using the positive feature map
+\begin{equation}
+    \phi(x)=\operatorname{ELU}(x)+1,
+    \label{eq:attn-linear-elu-feature}
+\end{equation}
+where \(\operatorname{ELU}\) is the exponential linear unit. The positive
+outputs are compatible with the non-negative character of the
+exponential kernel and permit a normalization term.
+
+Performer uses FAVOR+, a positive orthogonal random-feature method
+designed to provide an unbiased approximation of the softmax kernel.
+The survey also discusses Random Feature Attention and cosFormer as
+alternative feature-based constructions. These methods differ in how
+they represent or approximate the similarity function. Their computational
+advantage is obtained by replacing exact softmax attention with a
+feature-space approximation, so approximation quality and the feature
+dimension are part of the design problem
+\parencite{sun2026efficientattention}.
+
+\paragraph{Recurrent state formulation.}
+The associative form can be evaluated incrementally. Define the state
+after token \(t\) as
+\begin{equation}
+    A_t
+    =
+    \sum_{j=1}^{t}\phi(k_j)v_j^\top,
+    \qquad
+    z_t
+    =
+    \sum_{j=1}^{t}\phi(k_j).
+    \label{eq:attn-linear-recurrent-state}
+\end{equation}
+The state updates are
+\begin{align}
+    A_t&=A_{t-1}+\phi(k_t)v_t^\top,
+    \label{eq:attn-linear-state-update}\\
+    z_t&=z_{t-1}+\phi(k_t),
+    \label{eq:attn-linear-normalizer-update}
+\end{align}
+with \(A_0=0\) and \(z_0=0\). The current output is
+\begin{equation}
+    o_t
+    =
+    \frac{\phi(q_t)^\top A_t}
+         {\phi(q_t)^\top z_t}.
+    \label{eq:attn-linear-recurrent-output}
+\end{equation}
+The accumulated state summarizes the preceding key--value information.
+The current query retrieves from that state without separately comparing
+it with every previously stored key.
+
+The state has fixed dimensions \(r\times d_v\) and \(r\), so the update
+and storage per token do not grow with the number of preceding tokens,
+provided \(r\) and \(d_v\) are fixed. This gives linear-time sequence
+processing and constant-size recurrent memory per step. The recurrent
+form is useful for autoregressive decoding, while parallel or chunkwise
+forms can be used to expose more parallelism during training and prompt
+processing \parencite{sun2026efficientattention}.
+
+\paragraph{Forgetting mechanisms.}
+Basic additive linear attention accumulates previous information without
+an explicit decay. The survey describes recurrent designs that introduce
+forgetting mechanisms so that the contribution of older information can
+decrease over time.
+
+RetNet is presented as a data-independent-decay example. Its state
+recurrence is
+\begin{equation}
+    S_t=\gamma S_{t-1}+k_t^\top v_t,
+    \qquad
+    0<\gamma<1,
+    \label{eq:attn-retnet-recurrence}
+\end{equation}
+where \(\gamma\) is a learned decay coefficient, commonly associated
+with a retention head. The output is
+\begin{equation}
+    o_t=q_tS_t.
+    \label{eq:attn-retnet-output}
+\end{equation}
+Unrolling the recurrence gives
+\begin{equation}
+    S_t
+    =
+    \sum_{n=1}^{t}
+    \gamma^{t-n}k_n^\top v_n,
+    \qquad
+    o_t
+    =
+    \sum_{n=1}^{t}
+    \gamma^{t-n}q_tk_n^\top v_n.
+    \label{eq:attn-retnet-unrolled}
+\end{equation}
+The contribution from token \(n\) is multiplied by
+\(\gamma^{t-n}\). When \(\gamma\) is closer to one, information decays
+more slowly; a smaller \(\gamma\) produces faster forgetting. The decay
+is data-independent because the coefficient is not recalculated from
+the content of each incoming token.
+
+Data-dependent approaches instead use a gate \(G_t\) determined by the
+current input:
+\begin{equation}
+    S_t=G_tS_{t-1}+k_t^\top v_t.
+    \label{eq:attn-data-dependent-gate}
+\end{equation}
+A gate value near zero suppresses the corresponding part of the previous
+state, while a value near one preserves it. The survey discusses Mamba,
+Gated Linear Attention, xLSTM, GateLoop, HGRN, and related architectures
+as examples of input-dependent or gated recurrent state dynamics.
+The exact structure of \(G_t\) varies across architectures; it should
+not be assumed to be a single scalar in every model
+\parencite{sun2026efficientattention}.
+
+\paragraph{Linear attention as an in-context memory.}
+The recurrent state can also be interpreted as an associative memory.
+The update \(A_t=A_{t-1}+k_t^\top v_t\) writes a key--value association
+into a matrix-valued state, and \(o_t=q_tA_t\) retrieves information
+from that state using the current query. The state is therefore both
+a compact summary of preceding tokens and a rapidly updated memory.
+The efficient-attention survey places fast-weight and test-time-regression
+approaches, including DeltaNet and related methods, within this broader
+line of work. Their state-update rules modify the simple additive
+association update to control how new information changes previously
+stored information \parencite{sun2026efficientattention}.
+
+Linear attention changes the computation rather than merely changing
+the implementation schedule. Its sequence-length complexity can be
+linear, but its output is generally an approximation or alternative
+formulation of softmax attention. The feature map, state dynamics,
+forgetting mechanism, and ability to retain detailed long-range
+information therefore affect its modeling behavior.
+
+\subsection{Sparse attention}
+\label{subsec:attn-sparse-attention}
+
+Linear attention changes the kernel or recurrent formulation. Sparse
+attention instead retains softmax-style interactions but restricts the
+set of key positions available to each query. Its motivation is that
+many query--key interactions may be unnecessary for a useful output.
+The survey by \textcite{sun2026efficientattention} organizes sparse
+attention into fixed-pattern attention, block-sparse attention,
+clustering-based attention, and related bidirectional designs.
+
+\paragraph{Sparse interaction sets.}
+Let \(\mathcal{S}(i)\) be the subset of key positions selected for query
+\(i\). Sparse attention is
+\begin{equation}
+    o_i
+    =
+    \sum_{j\in\mathcal{S}(i)}
+    \alpha_{ij}v_j,
+    \label{eq:attn-sparse-output}
+\end{equation}
+where
+\begin{equation}
+    \alpha_{ij}
+    =
+    \frac{\exp(s_{ij})}
+         {\displaystyle\sum_{r\in\mathcal{S}(i)}\exp(s_{ir})},
+    \qquad
+    s_{ij}=\frac{q_i k_j^\top}{\sqrt{d_k}}.
+    \label{eq:attn-sparse-softmax}
+\end{equation}
+The softmax denominator includes only the selected positions. If each
+query attends to at most \(k\) keys, the main interaction cost becomes
+\begin{equation}
+    \mathcal{O}(Nkd_h)
+    \label{eq:attn-sparse-complexity}
+\end{equation}
+for one head. When \(k\) is fixed as \(N\) grows, this cost is linear
+in sequence length. The quality of the result depends on whether the
+selected set preserves the information needed by the query.
+
+\paragraph{Fixed-pattern sparse attention.}
+A fixed-pattern method defines the permitted interactions before
+evaluating the input. Local-window attention is one example. In a
+causal window of width \(w\), query position \(i\) attends to recent
+positions:
+\begin{equation}
+    \mathcal{S}_{\mathrm{local}}(i)
+    =
+    \left\{
+        j:
+        \max(1,i-w+1)\leq j\leq i
+    \right\}.
+    \label{eq:attn-local-window}
+\end{equation}
+The interaction count is at most \(Nw\), so the leading cost is
+\(\mathcal{O}(Nwd_h)\). A fixed window is efficient when \(w\) is
+small, but a query cannot directly retrieve a token outside the window.
+
+Dilated attention selects positions separated by a fixed interval.
+For dilation rate \(r\), an illustrative causal set is
+\begin{equation}
+    \mathcal{S}_{\mathrm{dilated}}(i)
+    =
+    \{i,i-r,i-2r,\ldots\}\cap\{1,\ldots,N\}.
+    \label{eq:attn-dilated-pattern}
+\end{equation}
+This pattern expands the temporal or positional range without attending
+to every intervening token. The survey lists local-window and dilated
+designs among fixed sparse attention methods
+\parencite{sun2026efficientattention}.
+
+\paragraph{Block-sparse attention.}
+Token-level sparsity can create irregular memory accesses. Block-sparse
+attention groups tokens into blocks and selects interactions between
+blocks. Let the block size be \(b\), and let
+\(T=\lceil N/b\rceil\) be the number of blocks. A block mask
+\begin{equation}
+    M_{\mathrm{block}}\in\{0,1\}^{T\times T}
+    \label{eq:attn-block-mask}
+\end{equation}
+indicates which query blocks may interact with which key blocks. If each
+query block attends to at most \(k_b\) key blocks, then the number of
+token-level interactions is proportional to
+\[
+    \frac{N}{b}\,k_b b^2
+    =
+    Nk_b b.
+\]
+The leading attention cost is therefore
+\begin{equation}
+    \mathcal{O}(Nk_bbd_h).
+    \label{eq:attn-block-sparse-complexity}
+\end{equation}
+For fixed \(b\) and \(k_b\), the dependence on \(N\) is linear.
+
+Block structure allows hardware kernels to skip entire
+matrix-multiplication tiles. The efficient-attention survey distinguishes
+block-sparse methods for prompt prefill from methods designed for decoding. Prefill methods include approaches
+that select important blocks while processing a long input; decoding
+methods select blocks from the existing KV cache for each new query.
+The survey also discusses routing-based block sparsity, including
+methods that use pooled block representations or learned selection
+scores \parencite{sun2026efficientattention}.
+
+\paragraph{Clustering and retrieval-based attention.}
+Clustering-based methods organize key representations into groups and
+retrieve selected groups rather than comparing every query with every
+key. Suppose the key vectors are partitioned into \(C\) clusters with
+centroids
+\begin{equation}
+    \mu_c
+    =
+    \frac{1}{|\mathcal{C}_c|}
+    \sum_{j\in\mathcal{C}_c}k_j,
+    \qquad c=1,\ldots,C.
+    \label{eq:attn-cluster-centroid}
+\end{equation}
+A query can be compared with the centroids to identify promising
+clusters, after which the corresponding token-level keys and values
+are retrieved. The survey describes ClusterKV as using \(k\)-means
+clustering and RetrievalAttention as using approximate nearest-neighbor
+search. It also discusses Locality-Sensitive Hashing (LSH) as a way
+to map similar query and key vectors into common hash buckets
+\parencite{sun2026efficientattention}.
+
+The efficiency of retrieval-based attention depends on the quality of
+the index or clustering structure and on the cost of selecting candidate
+groups. If relevant keys are assigned to clusters that are not retrieved,
+the query can lose access to useful information. The retrieval stage
+must therefore be included when evaluating the complete computational
+cost.
+
+\paragraph{Sparsity and hardware alignment.}
+A sparse mathematical pattern does not automatically guarantee a
+proportional wall-clock speedup. Irregular accesses, selection overhead,
+small matrix tiles, and insufficient parallel work can reduce the benefit
+of sparsity. Block-sparse designs attempt to align the pattern with
+matrix-multiplication tiles so that skipped interactions correspond to
+operations the hardware can omit efficiently. The survey emphasizes
+that practical sparse attention must account for block sizes, grouping
+of key--value heads, and reuse of selected blocks
+\parencite{sun2026efficientattention}.
+
+The survey also identifies training sparse attention from scratch as
+a challenge. Restricted connectivity can lead to sparse gradient
+signals and less effective optimization. Training-aware or trainable
+sparse mechanisms attempt to learn useful selection patterns, but
+high sparsity can still harm model quality. Sparse attention is therefore
+a trade-off between omitted computation and the risk of excluding
+information needed for accurate prediction
+\parencite{sun2026efficientattention}.
+
+\subsection{Hybrid attention architectures}
+\label{subsec:attn-hybrid-architectures}
+
+Dense, compact, hardware-efficient, sparse, and linear attention
+address different constraints. Dense attention offers unrestricted
+token-to-token interaction. Compact methods reduce the amount of
+key--value state that must be retained. Hardware-efficient methods
+reduce data movement and improve the execution of the same mathematical
+operation. Sparse methods omit selected interactions, while linear
+methods reformulate the computation to avoid the full pairwise matrix.
+A hybrid architecture combines more than one of these mechanisms so
+that different layers or components can provide complementary
+capabilities.
+
+The efficient-attention survey describes several broad hybrid patterns.
+A sparse--dense design interleaves dense attention layers with locally
+banded or otherwise sparse layers. Dense layers provide global
+interactions, while sparse layers reduce the number of token pairs
+processed in other parts of the network. The survey discusses GPT-3
+as an example of interleaving dense and locally banded sparse attention
+layers \parencite{sun2026efficientattention}.
+
+A linear--full design uses linear or recurrent attention in many layers
+and inserts softmax-based full attention at selected depths. The survey
+discusses Jamba and MiniMax-01 as examples of this pattern. In the
+reported MiniMax-01 design, Lightning Attention is used across most
+layers, with full attention inserted periodically. The purpose is to
+retain efficient state-based processing while preserving opportunities
+for precise global softmax interactions
+\parencite{sun2026efficientattention}.
+
+A local--full design alternates sliding-window attention with occasional
+global attention layers. The survey discusses Gemma 3, Command A, and
+LLaMA-4 Maverick as examples of architectures using local and global
+attention components. Local layers emphasize nearby context, while
+global layers provide longer-range interactions. The frequency and
+positioning of global layers determine the balance between computation
+and global information exchange \parencite{sun2026efficientattention}.
+
+These examples demonstrate that efficient attention is not necessarily
+a choice between one universal mechanism and another. Different
+architectural components can be combined to distribute the requirements
+of local processing, global retrieval, recurrent memory, and exact
+softmax interactions across the network.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/attention_efficiency_taxonomy}
+    \caption{Conceptual taxonomy of efficient attention mechanisms.
+    Hardware-efficient attention changes the execution schedule and
+    memory traffic; compact attention reduces stored key--value state;
+    sparse attention selects a subset of interactions; and linear
+    attention changes the mathematical formulation to obtain
+    subquadratic sequence-length dependence. Hybrid architectures
+    combine these mechanisms. Based on
+    \textcite{sun2026efficientattention}.}
+    \label{fig:attn-efficiency-taxonomy}
+\end{figure}
+% Alt text for accessibility register: Four categories are displayed:
+% hardware-efficient attention, compact attention, sparse attention, and
+% linear attention. Each category is paired with its principal mechanism.
+% A final note indicates that hybrid architectures combine categories.
+
+\subsection{Limitations and connection to the next topic}
+\label{subsec:attn-limitations-transition}
+
+Attention provides content-dependent information exchange in the
+Transformer. Its mathematical structure separates compatibility
+estimation from value aggregation, while multi-head attention provides
+several learned interaction spaces. Causal masking constrains information
+flow for autoregressive prediction, and backpropagation optimizes the
+projection spaces through the loss function.
+
+The architectural and computational variants address different
+limitations and should not be treated as interchangeable. Multi-query
+and grouped-query attention reduce key--value cache storage and memory
+traffic, but retain dense query-to-key interactions. FlashAttention-2
+preserves exact dense attention and its quadratic arithmetic dependence
+while reducing intermediate memory traffic and improving GPU work
+partitioning. Kernelized linear attention changes the similarity
+formulation and introduces approximation or alternative recurrent
+state dynamics. Sparse attention omits selected interactions and
+depends on the quality and hardware efficiency of its selection
+pattern. Hybrid architectures combine these mechanisms, but their
+benefits depend on the layer arrangement, sequence length, task, and
+hardware environment.
+
+The central engineering lesson is that arithmetic complexity, memory
+capacity, memory bandwidth, approximation error, and hardware
+parallelism are distinct quantities. A reduction in one does not
+guarantee a reduction in all the others. Consequently, an attention
+architecture must be evaluated in relation to its mathematical
+formulation and its intended training or inference workload.
+
+This completes the architectural account of how Transformer layers
+exchange contextual information. The next chapter turns from the
+architecture of the computation to the optimization procedures used
+to learn its parameters. Understanding attention's forward and
+backward computations provides the necessary basis for examining
+optimization algorithms, loss functions, and the numerical and
+computational techniques used to train large language models.

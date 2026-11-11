@@ -1,0 +1,21 @@
+% Schematic contrast between deep/narrow and shallow/wide configurations.
+\begingroup
+\setlength{\unitlength}{0.8mm}
+\begin{picture}(150,57)
+    \put(3,45){\makebox(61,5)[c]{\textbf{Deep / narrow}}}
+    \put(82,45){\makebox(64,5)[c]{\textbf{Shallow / wide}}}
+    % Deep/narrow stack.
+    \put(8,32){\framebox(18,8){Layer 1}}
+    \put(8,21){\framebox(18,8){Layer 2}}
+    \put(8,10){\framebox(18,8){Layer 3}}
+    \put(17,32){\vector(0,-1){3}}
+    \put(17,21){\vector(0,-1){3}}
+    \put(30,24){\makebox(33,7)[l]{More sequential stages}}
+    % Shallow/wide stack.
+    \put(88,27){\framebox(43,13){Wide layer 1}}
+    \put(88,10){\framebox(43,13){Wide layer 2}}
+    \put(109,27){\vector(0,-1){4}}
+    \put(135,24){\makebox(12,7)[l]{Fewer stages}}
+    \put(3,1){\makebox(143,5)[l]{At a fixed parameter budget, shape can change latency and predictive loss.}}
+\end{picture}
+\endgroup

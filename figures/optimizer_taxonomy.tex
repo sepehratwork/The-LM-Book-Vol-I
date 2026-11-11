@@ -1,0 +1,64 @@
+% ============================================================================
+% figures/optimizer_taxonomy.tex
+% Included from the section body inside a figure environment.
+% Uses standard LaTeX boxes and tabular environments; no TikZ dependency.
+% ============================================================================
+\begin{center}
+\renewcommand{\arraystretch}{1.18}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{c}
+\fbox{\parbox{0.78\linewidth}{
+    \centering
+    \textbf{Stochastic gradient information}\\
+    Current minibatch gradient and, where available, historical statistics
+}}\\[0.45em]
+$\Downarrow$\\[0.45em]
+\begin{tabular}{cccc}
+\fbox{\parbox{0.215\linewidth}{
+    \centering
+    \textbf{Scalar / diagonal}\\[0.25em]
+    SGD\\
+    Momentum\\
+    AdaGrad\\
+    RMSProp\\
+    AdamW\\
+    Lion
+}}
+&
+\fbox{\parbox{0.215\linewidth}{
+    \centering
+    \textbf{Matrix / tensor}\\[0.25em]
+    Shampoo\\
+    SOAP\\
+    Kron\\
+    Muon
+}}
+&
+\fbox{\parbox{0.215\linewidth}{
+    \centering
+    \textbf{Memory-oriented}\\[0.25em]
+    Adafactor\\
+    Adam-mini\\
+    Low-bit states\\
+    LOMO\\
+    GaLore
+}}
+&
+\fbox{\parbox{0.215\linewidth}{
+    \centering
+    \textbf{Curvature / projection}\\[0.25em]
+    Sophia\\
+    Quasi-Newton\\
+    Hessian-free\\
+    Low-rank projection
+}}
+\end{tabular}\\[0.45em]
+$\Downarrow$\\[0.45em]
+\fbox{\parbox{0.78\linewidth}{
+    \centering
+    \textbf{Parameter update}\\
+    A transformed gradient-derived direction is applied under a learning-rate
+    schedule and the chosen regularization and numerical-stability rules.
+}}
+\end{tabular}
+\end{center}

@@ -1,0 +1,25 @@
+% Schematic IsoFLOPs curves in parameter-count / token-count coordinates.
+\begingroup
+\setlength{\unitlength}{0.8mm}
+\begin{picture}(116,72)
+    \put(12,10){\vector(1,0){96}}
+    \put(12,10){\vector(0,1){56}}
+    \put(110,6){\makebox(0,0)[l]{\(N\)}}
+    \put(7,68){\makebox(0,0)[b]{\(D\)}}
+    \thinlines
+    \qbezier(19,61)(27,36)(83,15)
+    \qbezier(19,68)(40,42)(102,20)
+    \qbezier(28,68)(56,49)(108,33)
+    \put(79,13){\makebox(0,0)[l]{\(C_1\)}}
+    \put(98,19){\makebox(0,0)[l]{\(C_2\)}}
+    \put(104,33){\makebox(0,0)[l]{\(C_3\)}}
+    \thicklines
+    \put(45,28){\circle*{2.4}}
+    \put(67,35){\circle*{2.4}}
+    \put(83,45){\circle*{2.4}}
+    \put(45,24){\makebox(0,0)[t]{\( (N_1^*,D_1^*)\)}}
+    \put(68,31){\makebox(0,0)[t]{\( (N_2^*,D_2^*)\)}}
+    \put(84,41){\makebox(0,0)[t]{\( (N_3^*,D_3^*)\)}}
+    \put(14,2){\makebox(90,4)[l]{Each curve fixes approximate training FLOPs.}}
+\end{picture}
+\endgroup

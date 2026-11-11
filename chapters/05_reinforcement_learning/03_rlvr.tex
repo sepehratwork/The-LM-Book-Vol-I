@@ -1,0 +1,1132 @@
+% ============================================================================
+% Reinforcement Learning with Verifiable Rewards (RLVR)
+% Section file: chapters/05_reinforcement_learning/03_rlvr.tex
+%
+% This file is designed to be included immediately after the corresponding
+% \section command in the book's master file. It intentionally contains no
+% \chapter, \section, package imports, or bibliography command.
+% ============================================================================
+
+Having established the actor--critic framework and the roles of the policy and
+value functions, we can now examine how a language model can use an external
+criterion of correctness to improve its generated responses. The central
+question is how a scalar assessment of a completed response can be converted
+into a learning signal for the token-level decisions that produced it. This
+question motivates \emph{Reinforcement Learning with Verifiable Rewards}
+(RLVR), a post-training approach in which the reward is obtained from a
+verification procedure rather than exclusively from a learned model of human
+preferences.
+
+The distinction matters because not every desirable property of a language
+model is equally difficult to evaluate. Helpfulness, style, and conversational
+quality often require contextual judgments. By contrast, the final answer to a
+well-specified mathematical problem can frequently be checked against a
+known answer, and explicitly stated instruction constraints can sometimes be
+tested programmatically. When a task admits a reliable verifier, the model can
+be optimized against the outcome of its own generated response. The Tülu 3
+training framework provides a concrete implementation of this idea for
+mathematical reasoning and precise instruction following
+\parencite{lambert2025tulu3}.
+
+RLVR is best understood as a change in the source of the reward, not as a
+replacement for the probabilistic generation mechanism of a language model.
+The model remains an autoregressive policy, and its parameters are still
+updated through reinforcement learning. What changes is the function that
+evaluates a completed response. The following development begins with the
+connection between autoregressive generation and episodic decision-making,
+then formulates the verifiable reward objective, and finally explains how
+PPO-based optimization, data construction, and the Tülu 3 experiments
+instantiate the method.
+
+% ----------------------------------------------------------------------------
+% Main exposition
+% ----------------------------------------------------------------------------
+
+\subsection{From autoregressive language modeling to outcome-based learning}
+\label{subsec:rlvr-autoregressive-foundation}
+
+A language model represents a conditional probability distribution over
+possible token sequences. Let \(x\) denote an input prompt and let
+\(y=(y_1,y_2,\ldots,y_T)\) denote a response consisting of \(T\) generated
+tokens. The model is parameterized by \(\theta\), and its autoregressive
+factorization is
+
+\begin{equation}
+    \pi_\theta(y\mid x)
+    =
+    \prod_{t=1}^{T}
+    \pi_\theta(y_t\mid x,y_{<t}),
+    \qquad
+    y_{<t}=(y_1,\ldots,y_{t-1}).
+    \label{eq:rlvr-autoregressive-policy}
+\end{equation}
+
+The notation \(\pi_\theta\) emphasizes that the language model can be
+interpreted as a stochastic policy. At each generation step, the model
+assigns a probability to every token in its vocabulary, conditioned on the
+prompt and the tokens already generated. A token is sampled or selected
+according to this conditional distribution, appended to the sequence, and
+used as part of the context for the next prediction. Generation ends when an
+end-of-sequence (EOS) token is produced or when a prescribed generation limit
+is reached.
+
+This process has the structure of an episodic decision problem. In
+reinforcement learning, an agent observes a state, selects an action according
+to a policy, and moves to a subsequent state. For autoregressive generation,
+the state at step \(t\) can be written as
+
+\begin{equation}
+    s_t=(x,y_{<t}),
+    \qquad
+    a_t=y_t.
+    \label{eq:rlvr-state-action}
+\end{equation}
+
+The prompt and the previously generated tokens form the state, while the
+next token is the action. Once the action is selected, the next state is
+obtained by appending that token to the sequence. Conditional on the selected
+token, this transition is deterministic at the level of the token history;
+the stochasticity lies in the policy's selection of the token. A complete
+response therefore corresponds to a trajectory through the state space of
+the generation process.
+
+The distinction between a token-level action and a sequence-level outcome is
+central to RLVR. The verifier ordinarily evaluates the completed response,
+not each token independently. A mathematical answer may be judged correct
+only after the model has produced its final result, and an instruction may be
+judged satisfied only after the complete response can be checked against its
+constraints. Thus, a scalar reward can be assigned at the end of a trajectory
+even though the policy made a sequence of token-level decisions.
+
+In supervised fine-tuning, a model is trained to increase the likelihood of
+a supplied reference response. If \(y^\star\) is the reference sequence, the
+usual maximum-likelihood objective is to minimize the negative conditional
+log-likelihood,
+
+\begin{equation}
+    \mathcal{L}_{\mathrm{SFT}}(\theta)
+    =
+    -\mathbb{E}_{(x,y^\star)}
+    \left[
+        \log \pi_\theta(y^\star\mid x)
+    \right].
+    \label{eq:rlvr-sft-objective}
+\end{equation}
+
+This objective directly rewards agreement with the demonstrated sequence.
+It does not, by itself, distinguish between alternative responses that are
+all correct. RLVR instead evaluates sampled responses according to whether
+they satisfy a specified outcome criterion. Different reasoning trajectories
+can consequently receive the same reward if they lead to an answer accepted
+by the verifier.
+
+The objective is therefore not to reproduce one prescribed token sequence.
+It is to increase the probability that the policy generates a response
+belonging to the set of responses accepted by the verification procedure.
+This changes the source of supervision while preserving the autoregressive
+structure of the language model.
+
+\subsection{Verifiable rewards and the KL-regularized objective}
+\label{subsec:rlvr-objective}
+
+In conventional reinforcement learning from human feedback (RLHF), a learned
+reward model commonly maps a prompt--response pair to a scalar score. Let
+
+\begin{equation}
+    r_\phi(x,y)\in\mathbb{R}
+    \label{eq:rlvr-learned-reward}
+\end{equation}
+
+denote such a reward model, where \(\phi\) denotes its parameters. Its output
+is an estimate of response quality learned from preference information.
+Because it is a learned statistical model, its predictions can contain
+estimation error and can reflect limitations in the preference data and the
+reward-model training procedure.
+
+RLVR replaces this learned estimate with a verification function. Let
+
+\begin{equation}
+    C(x,y)\in\{0,1\}
+    \label{eq:rlvr-verifier}
+\end{equation}
+
+denote a binary verifier, where \(C(x,y)=1\) means that response \(y\)
+satisfies the criterion associated with prompt \(x\), and \(C(x,y)=0\)
+means that it does not. The corresponding reward is
+
+\begin{equation}
+    v(x,y)
+    =
+    \begin{cases}
+        \alpha, & C(x,y)=1,\\
+        0,      & C(x,y)=0,
+    \end{cases}
+    \label{eq:rlvr-binary-reward}
+\end{equation}
+
+where \(\alpha>0\) is the reward magnitude. Equivalently,
+
+\begin{equation}
+    v(x,y)=\alpha\,\mathbb{I}[C(x,y)=1],
+    \label{eq:rlvr-indicator-reward}
+\end{equation}
+
+where \(\mathbb{I}[\cdot]\) is the indicator function. In the Tülu 3
+implementation, the authors set \(\alpha=10\), based on pilot experiments,
+and did not tune it further \parencite{lambert2025tulu3}.
+
+A binary verifier maps a potentially complex response space to two reward
+values. All responses that fail the specified condition receive zero,
+regardless of how close they are to satisfying it. Responses that pass
+receive the same positive reward, even if their reasoning paths or writing
+styles differ. The reward therefore represents satisfaction of the
+specified criterion, not a continuous estimate of general response quality.
+
+For a fixed prompt \(x\), the expected verifiable reward under the current
+policy is
+
+\begin{align}
+    \mathbb{E}_{y\sim\pi_\theta(\cdot\mid x)}
+    [v(x,y)]
+    &=
+    \mathbb{E}_{y\sim\pi_\theta(\cdot\mid x)}
+    \left[
+        \alpha\,\mathbb{I}[C(x,y)=1]
+    \right]
+    \nonumber\\
+    &=
+    \alpha\,
+    \Pr_{y\sim\pi_\theta(\cdot\mid x)}
+    [C(x,y)=1].
+    \label{eq:rlvr-expected-reward}
+\end{align}
+
+The equality follows from the definition of the expectation of an indicator
+function. It gives the central interpretation of binary RLVR: maximizing
+expected reward is equivalent to maximizing the probability that the policy
+generates a response accepted by the verifier, up to the positive scaling
+factor \(\alpha\).
+
+Let \(\mathcal{D}\) denote the distribution of training prompts. Averaging
+over this distribution gives
+
+\begin{equation}
+    J_{\mathrm{ver}}(\theta)
+    =
+    \alpha\,
+    \mathbb{E}_{x\sim\mathcal{D}}
+    \left[
+        \Pr_{y\sim\pi_\theta(\cdot\mid x)}
+        [C(x,y)=1]
+    \right].
+    \label{eq:rlvr-verification-objective}
+\end{equation}
+
+An unconstrained maximization of this objective can move the policy
+substantially away from the distribution learned during pre-training and
+earlier post-training. Such movement may improve the targeted verifier score
+while degrading behavior that is not measured by that verifier. RLVR
+therefore uses a regularization term based on the Kullback--Leibler (KL)
+divergence between the current policy and a reference policy.
+
+For discrete probability distributions \(P\) and \(Q\), the KL divergence is
+
+\begin{equation}
+    D_{\mathrm{KL}}(P\parallel Q)
+    =
+    \sum_z P(z)\log\frac{P(z)}{Q(z)}.
+    \label{eq:rlvr-kl-definition}
+\end{equation}
+
+It is the expected logarithmic probability ratio under \(P\). The divergence
+is nonnegative, provided the distributions satisfy the relevant support
+conditions, and it is zero when the two distributions are identical. For a
+prompt-conditioned language model, the relevant quantity is
+
+\begin{equation}
+    D_{\mathrm{KL}}
+    \left(
+        \pi_\theta(\cdot\mid x)
+        \parallel
+        \pi_{\mathrm{ref}}(\cdot\mid x)
+    \right),
+    \label{eq:rlvr-policy-kl}
+\end{equation}
+
+where \(\pi_{\mathrm{ref}}\) is the reference policy. The current policy
+\(\pi_\theta\) is trainable, whereas the reference policy supplies the
+distributional anchor against which the change in the current policy is
+measured.
+
+The KL-regularized RLVR objective used in Tülu 3 can be written as
+
+\begin{equation}
+    \boxed{
+    \begin{aligned}
+    \max_{\theta}\quad
+    J_{\mathrm{RLVR}}(\theta)
+    =
+    \mathbb{E}_{x\sim\mathcal{D}}
+    \Big[
+        &\mathbb{E}_{y\sim\pi_\theta(\cdot\mid x)}
+        [v(x,y)]\\
+        &-\beta
+        D_{\mathrm{KL}}
+        \left(
+            \pi_\theta(\cdot\mid x)
+            \parallel
+            \pi_{\mathrm{ref}}(\cdot\mid x)
+        \right)
+    \Big],
+    \end{aligned}
+    }
+    \label{eq:rlvr-kl-objective}
+\end{equation}
+
+where \(\beta\geq 0\) controls the strength of the reference-policy
+regularization. A larger \(\beta\) makes divergence from the reference policy
+more costly; a smaller \(\beta\) permits greater movement in pursuit of the
+verification reward. The coefficient therefore controls a trade-off between
+targeted outcome optimization and preservation of the reference distribution.
+
+The KL term can also be expressed at the token level. From the
+autoregressive factorization in \cref{eq:rlvr-autoregressive-policy},
+
+\begin{equation}
+    \log \pi_\theta(y\mid x)
+    =
+    \sum_{t=1}^{T}
+    \log \pi_\theta(y_t\mid x,y_{<t}).
+    \label{eq:rlvr-log-sequence-prob}
+\end{equation}
+
+Applying the same identity to the reference policy gives
+
+\begin{align}
+    \log
+    \frac{\pi_\theta(y\mid x)}
+         {\pi_{\mathrm{ref}}(y\mid x)}
+    &=
+    \sum_{t=1}^{T}
+    \log
+    \frac{
+        \pi_\theta(y_t\mid x,y_{<t})
+    }{
+        \pi_{\mathrm{ref}}(y_t\mid x,y_{<t})
+    }.
+    \label{eq:rlvr-token-kl-decomposition}
+\end{align}
+
+Taking the expectation under the current policy yields
+
+\begin{equation}
+    \begin{aligned}
+    D_{\mathrm{KL}}
+    \left(
+        \pi_\theta(\cdot\mid x)
+        \parallel
+        \pi_{\mathrm{ref}}(\cdot\mid x)
+    \right)
+    =
+    \mathbb{E}_{y\sim\pi_\theta}
+    \left[
+        \sum_{t=1}^{T}
+        \log
+        \frac{
+            \pi_\theta(y_t\mid x,y_{<t})
+        }{
+            \pi_{\mathrm{ref}}(y_t\mid x,y_{<t})
+        }
+    \right].
+    \end{aligned}
+    \label{eq:rlvr-expected-token-kl}
+\end{equation}
+
+Thus, a sequence-level divergence can be understood as the expected sum of
+token-level log-probability differences along trajectories sampled from the
+current policy. The verifier evaluates the complete response, while the KL
+regularizer accumulates differences between the conditional token
+distributions of the current and reference policies.
+
+The reward scale and the KL coefficient must be interpreted jointly. In
+Tülu 3, a successful verification receives a reward of ten, while the KL
+coefficient is varied across experiments. Changing the relative scale of
+these terms changes the optimization trade-off even when the verifier itself
+is unchanged.
+
+The policy-gradient formulation explains why a nondifferentiable verifier
+can still be used for learning. For a fixed prompt, define
+
+\begin{equation}
+    J(\theta)
+    =
+    \mathbb{E}_{y\sim\pi_\theta(\cdot\mid x)}
+    [v(x,y)]
+    =
+    \sum_y \pi_\theta(y\mid x)v(x,y).
+    \label{eq:rlvr-policy-gradient-start}
+\end{equation}
+
+Differentiating and applying the logarithmic derivative identity gives
+
+\begin{align}
+    \nabla_\theta J(\theta)
+    &=
+    \sum_y
+    \nabla_\theta\pi_\theta(y\mid x)v(x,y)
+    \nonumber\\
+    &=
+    \sum_y
+    \pi_\theta(y\mid x)
+    \nabla_\theta\log\pi_\theta(y\mid x)
+    v(x,y)
+    \nonumber\\
+    &=
+    \mathbb{E}_{y\sim\pi_\theta(\cdot\mid x)}
+    \left[
+        v(x,y)\nabla_\theta\log\pi_\theta(y\mid x)
+    \right].
+    \label{eq:rlvr-score-function-gradient}
+\end{align}
+
+The derivative is taken through the policy probability, not through the
+verifier. The verifier may perform exact answer comparison or evaluate a
+constraint using a discrete programmatic test; it does not need to be
+differentiable with respect to \(\theta\). Using the autoregressive
+factorization, the sequence-level gradient becomes
+
+\begin{equation}
+    \nabla_\theta J(\theta)
+    =
+    \mathbb{E}_{y\sim\pi_\theta}
+    \left[
+        v(x,y)
+        \sum_{t=1}^{T}
+        \nabla_\theta
+        \log\pi_\theta(y_t\mid x,y_{<t})
+    \right].
+    \label{eq:rlvr-token-policy-gradient}
+\end{equation}
+
+A scalar outcome reward can therefore influence the parameters involved in
+all token decisions along the sampled trajectory. For the full
+KL-regularized objective, the gradient also contains the derivative of the
+KL term. The score-function derivation above isolates the reward component
+and shows why nondifferentiable outcome evaluation is compatible with
+policy-gradient learning.
+
+\subsection{PPO optimization, value estimation, and implementation}
+\label{subsec:rlvr-ppo-implementation}
+
+The policy-gradient estimator in \cref{eq:rlvr-score-function-gradient}
+can have high variance because a single response-level reward is associated
+with many token-generation decisions. Actor--critic methods address this
+problem by learning a value function that estimates the expected return from
+an intermediate state. This is the role of the value model in PPO-based
+RLVR.
+
+Let \(V_\psi(s_t)\) denote a value function parameterized by \(\psi\). It
+estimates the expected return from state \(s_t=(x,y_{<t})\) under the policy
+being considered. The value function is not the verifier and does not define
+correctness. The verifier supplies the task reward; the value function
+estimates expected returns and supports the construction of advantage
+estimates.
+
+The action-value function \(Q(s_t,a_t)\) represents the expected return
+after taking action \(a_t\) in state \(s_t\). The advantage function is
+
+\begin{equation}
+    A(s_t,a_t)
+    =
+    Q(s_t,a_t)-V(s_t).
+    \label{eq:rlvr-advantage-definition}
+\end{equation}
+
+An advantage is positive when the action performs better than the state-value
+baseline and negative when it performs worse. In sampled training, an
+estimated return \(\widehat{G}_t\) can be used to construct
+
+\begin{equation}
+    \widehat{A}_t
+    =
+    \widehat{G}_t-V_\psi(s_t).
+    \label{eq:rlvr-advantage-estimate}
+\end{equation}
+
+Subtracting a state-dependent baseline can reduce the variance of the
+policy-gradient estimator without changing its expectation, provided that
+the baseline does not depend on the sampled action. In particular,
+
+\begin{align}
+    \mathbb{E}_{a_t\sim\pi_\theta(\cdot\mid s_t)}
+    \left[
+        \nabla_\theta\log\pi_\theta(a_t\mid s_t)
+    \right]
+    &=
+    \sum_{a_t}
+    \pi_\theta(a_t\mid s_t)
+    \nabla_\theta\log\pi_\theta(a_t\mid s_t)
+    \nonumber\\
+    &=
+    \sum_{a_t}
+    \nabla_\theta\pi_\theta(a_t\mid s_t)
+    \nonumber\\
+    &=
+    \nabla_\theta
+    \sum_{a_t}\pi_\theta(a_t\mid s_t)
+    =0.
+    \label{eq:rlvr-baseline-zero}
+\end{align}
+
+It follows that subtracting a state-only baseline does not change the
+expected policy gradient. A learned value function supplies such a baseline
+while adapting it to the generation state.
+
+A common estimator used with PPO is Generalized Advantage Estimation (GAE).
+Define the temporal-difference residual as
+
+\begin{equation}
+    \delta_t
+    =
+    r_t+\gamma V_\psi(s_{t+1})-V_\psi(s_t),
+    \label{eq:rlvr-td-residual}
+\end{equation}
+
+where \(r_t\) is the reward at step \(t\), \(\gamma\) is the discount factor,
+and \(V_\psi\) is the value function. GAE combines residuals from multiple
+future steps:
+
+\begin{equation}
+    \widehat{A}^{\mathrm{GAE}}_t
+    =
+    \sum_{l=0}^{T-t}
+    (\gamma\lambda)^l\delta_{t+l},
+    \label{eq:rlvr-gae}
+\end{equation}
+
+where \(\lambda\) controls the weighting of longer-horizon residuals. Lower
+values of \(\lambda\) emphasize shorter-horizon estimates, while values
+closer to one incorporate more of the later trajectory. The discount factor
+\(\gamma\) controls the relative contribution of future rewards. Tülu 3 uses
+\(\gamma=1.0\) and \(\lambda=0.95\) in its reported PPO configuration
+\parencite{lambert2025tulu3}. With \(\gamma=1\), future rewards are not
+geometrically discounted in this episodic formulation.
+
+PPO updates the policy using trajectories sampled from a preceding policy.
+Let \(\theta_{\mathrm{old}}\) denote the parameters of the policy that
+generated the current rollout, and let \(\theta\) denote the parameters being
+optimized. For a sampled state--action pair, define the probability ratio
+
+\begin{equation}
+    \rho_t(\theta)
+    =
+    \frac{
+        \pi_\theta(a_t\mid s_t)
+    }{
+        \pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)
+    }.
+    \label{eq:rlvr-ppo-ratio}
+\end{equation}
+
+A ratio greater than one means that the current policy assigns a higher
+probability to the sampled action than the rollout policy did; a ratio below
+one means that the probability has decreased. An unclipped surrogate
+objective would use \(\rho_t(\theta)\widehat{A}_t\). Large changes in the
+ratio, however, can produce overly aggressive updates and make the
+optimization rely on samples generated by a substantially different policy.
+
+PPO controls this incentive through the clipped surrogate objective,
+
+\begin{equation}
+    \boxed{
+    L^{\mathrm{CLIP}}(\theta)
+    =
+    \mathbb{E}_t
+    \left[
+        \min
+        \left(
+            \rho_t(\theta)\widehat{A}_t,\,
+            \operatorname{clip}
+            \left(
+                \rho_t(\theta),1-\epsilon,1+\epsilon
+            \right)\widehat{A}_t
+        \right)
+    \right],
+    }
+    \label{eq:rlvr-ppo-clip}
+\end{equation}
+
+where \(\epsilon\) is the clipping coefficient. When the advantage is
+positive, the objective favors increasing the probability of the sampled
+action, but clipping limits the incentive for an excessively large increase.
+When the advantage is negative, the objective favors decreasing that
+probability, while clipping limits the incentive for an excessively large
+decrease. Tülu 3 sets \(\epsilon=0.2\), giving the ratio interval
+\([0.8,1.2]\) in the clipping operation.
+
+The PPO clipping mechanism and the KL regularization in
+\cref{eq:rlvr-kl-objective} should not be conflated. The ratio in
+\cref{eq:rlvr-ppo-ratio} compares the current policy with the policy that
+generated the present rollout. The KL term compares the current policy with
+the reference policy. The two mechanisms use different reference
+distributions and serve different purposes: clipping controls the local
+policy update, whereas KL regularization anchors the policy to the selected
+reference distribution.
+
+The value model is trained to predict returns. A squared-error value loss
+can be written as
+
+\begin{equation}
+    L_V(\psi)
+    =
+    \mathbb{E}_t
+    \left[
+        \left(
+            V_\psi(s_t)-\widehat{G}_t
+        \right)^2
+    \right],
+    \label{eq:rlvr-value-loss}
+\end{equation}
+
+where \(\widehat{G}_t\) is the return target used by the implementation.
+The policy and value model therefore have distinct roles: the policy learns
+which token actions should become more probable, while the value model
+estimates expected returns to support advantage estimation.
+
+The Tülu 3 implementation uses a value-function coefficient \(c_1=0.1\),
+a gradient-norm threshold of \(1.0\), and a linear learning-rate schedule.
+It also normalizes the advantage estimates by subtracting their batch mean
+and dividing by their batch standard deviation:
+
+\begin{equation}
+    \widehat{A}^{\mathrm{norm}}_t
+    =
+    \frac{
+        \widehat{A}_t-\mu_A
+    }{
+        \sigma_A
+    },
+    \label{eq:rlvr-advantage-whitening}
+\end{equation}
+
+where \(\mu_A\) and \(\sigma_A\) are the mean and standard deviation of the
+advantages over the normalization batch. This operation controls the
+numerical scale of the policy-gradient signal. The implementation sets
+dropout to zero during reward-model and reinforcement-learning training so
+that rollout-time and learning-time token log probabilities remain
+consistent. If stochastic dropout causes these probabilities to differ,
+the probability ratio can depart from one even at the start of the first PPO
+epoch, leading to excessive clipping and potentially eliminating useful
+gradients \parencite{lambert2025tulu3}.
+
+The response termination condition is also treated explicitly. PPO samples
+responses up to a maximum token length, and a response that reaches this
+limit without an EOS token may be incomplete. Tülu 3 applies an additional
+penalty of \(-10\) to responses without an EOS token. This termination
+penalty is an implementation detail in addition to the binary verification
+reward; it encourages the policy to complete its responses rather than
+repeatedly generating to the maximum length.
+
+The complete relationship between generation, verification, regularization,
+value estimation, and policy updating is summarized in
+\cref{fig:rlvr-training-pipeline}. The policy generates a response from a
+prompt, the verifier evaluates the completed response, and the resulting
+reward is used together with the KL term and the advantage estimates in the
+PPO update. The reference policy supplies the distribution used for the KL
+regularizer, while the value model supplies estimates used to construct
+advantages. The verifier and value model are therefore not interchangeable:
+one defines the task outcome, and the other supports optimization.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/rlvr_pipeline.tex}
+    \caption{Conceptual structure of PPO-based reinforcement learning with
+    verifiable rewards. The policy generates a response that is evaluated by
+    a verifier. The resulting reward, the KL penalty relative to the reference
+    policy, and advantage estimates derived from the value model inform the
+    PPO update. Original schematic based on the RLVR framework described by
+    \textcite{lambert2025tulu3}.}
+    \label{fig:rlvr-training-pipeline}
+\end{figure}
+
+\subsection{Verifiable data, training recipe, and empirical behavior}
+\label{subsec:rlvr-data-recipe-results}
+
+An RLVR dataset must provide more than input prompts. Each prompt must be
+associated with a verification procedure that can evaluate a generated
+response. A convenient representation is
+
+\begin{equation}
+    \mathcal{D}_{\mathrm{RLVR}}
+    =
+    \left\{
+        (x_i,C_i)
+    \right\}_{i=1}^{N},
+    \label{eq:rlvr-dataset}
+\end{equation}
+
+where \(x_i\) is a training prompt, \(C_i\) is its associated verifier, and
+\(N\) is the number of prompts. The response itself is sampled from the
+current policy during training; the dataset supplies the prompt and the
+procedure for evaluating the response.
+
+The verifier is task-dependent. In mathematical reasoning, it can extract
+the final answer and compare it with a known answer. In precise instruction
+following, it can test whether a completion satisfies a specified constraint.
+The same binary reward interface can therefore be used across tasks whose
+underlying verification procedures differ.
+
+For GSM8K, Tülu 3 uses the training set of 7,473 prompts. Each example is
+augmented with the standard eight-shot prompt used during evaluation to
+encourage chain-of-thought generation. The verifier extracts the final
+number from the generated response and compares it with the ground-truth
+label. In abstract form,
+
+\begin{equation}
+    C_{\mathrm{GSM8K}}(x,y)
+    =
+    \mathbb{I}
+    \left[
+        E_{\mathrm{num}}(y)=a^\star(x)
+    \right],
+    \label{eq:rlvr-gsm8k-verifier}
+\end{equation}
+
+where \(E_{\mathrm{num}}\) is the answer-extraction procedure and
+\(a^\star(x)\) is the ground-truth answer.
+
+For MATH, the training mixture contains 7,500 prompts. The examples are
+augmented with the standard three-shot chain-of-thought prompt used during
+evaluation. The generated answer is extracted and checked using the
+flexible MATH evaluation logic. This is important because mathematically
+equivalent answers can have different textual representations. A verifier
+based only on literal string equality could incorrectly reject two
+representations of the same mathematical result. The MATH verification
+procedure is therefore represented more generally as
+
+\begin{equation}
+    C_{\mathrm{MATH}}(x,y)
+    =
+    \mathbb{I}
+    \left[
+        E_{\mathrm{MATH}}(y)
+        \equiv a^\star(x)
+    \right],
+    \label{eq:rlvr-math-verifier}
+\end{equation}
+
+where \(\equiv\) denotes the comparison logic used by the evaluation
+procedure.
+
+The instruction-following component is constructed differently. Tülu 3
+randomly samples instructions from the Tülu 2 supervised fine-tuning mixture
+and combines them with constraints drawn from the taxonomy used for IFEval.
+A prompt-specific verifier is constructed for each constraint template.
+If \(g_j(x,y)\) denotes the test associated with constraint template \(j\),
+then the verification function can be represented as
+
+\begin{equation}
+    C_{\mathrm{IF}}(x,y)
+    =
+    \mathbb{I}[g_j(x,y)=1].
+    \label{eq:rlvr-if-verifier}
+\end{equation}
+
+The condition \(g_j(x,y)=1\) indicates that the generated completion
+satisfies the corresponding constraint. Unlike mathematical answer
+verification, this procedure need not extract one numerical answer; it
+checks the property specified by the instruction template.
+
+The resulting Tülu 3 training mixture contains 29,946 prompts, divided
+equally between mathematical tasks and verifiable instruction following.
+The composition is shown in \cref{tab:rlvr-dataset-composition}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Composition of the Tülu 3 verifiable-reward prompt dataset.
+    Source: \textcite{lambert2025tulu3}.}
+    \label{tab:rlvr-dataset-composition}
+    \begin{tabularx}{\textwidth}{l r X}
+        \toprule
+        \textbf{Training domain}
+        & \textbf{Prompts}
+        & \textbf{Verification procedure}\\
+        \midrule
+        GSM8K
+        & 7,473
+        & Exact match against the extracted answer\\
+        MATH
+        & 7,500
+        & Extracted-answer verification using flexible MATH evaluation logic\\
+        Verifiable instruction following
+        & 14,973
+        & Prompt-specific constraint verifiers\\
+        \midrule
+        \textbf{Total}
+        & \textbf{29,946}
+        & \textbf{Binary verification}\\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+The mathematical portion contains
+
+\begin{equation}
+    N_{\mathrm{math}}
+    =
+    7{,}473+7{,}500
+    =
+    14{,}973
+    \label{eq:rlvr-math-count}
+\end{equation}
+
+prompts, which equals the 14,973 prompts in the verifiable instruction-
+following component. The mixture therefore contains equal numbers of
+mathematical and instruction-following prompts. Although the reward
+interface is shared, the meaning of a successful response remains
+domain-dependent because each task uses its own verifier.
+
+The Tülu 3 procedure applies RLVR after supervised fine-tuning and
+preference fine-tuning. The starting policy is therefore already an
+instruction-tuned model that has undergone preference optimization. In
+the reported experiments, the authors use DPO checkpoints as the principal
+starting points and also investigate initialization from a weaker
+supervised fine-tuning checkpoint. This ordering separates the roles of the
+post-training stages. Supervised fine-tuning teaches the model from
+demonstrations, preference fine-tuning optimizes relative response
+preferences, and RLVR optimizes sampled responses according to verifiable
+outcomes.
+
+The PPO configuration used in the experiments is summarized in
+\cref{tab:rlvr-ppo-hyperparameters}. The values distinguish the standard
+configuration reported for RLVR from settings that vary with model scale or
+the particular run.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Selected PPO hyperparameters reported for the Tülu 3 RLVR
+    experiments. Values are transcribed from the RLVR configuration in
+    \textcite{lambert2025tulu3}.}
+    \label{tab:rlvr-ppo-hyperparameters}
+    \small
+    \begin{tabularx}{\textwidth}{l l X}
+        \toprule
+        \textbf{Hyperparameter}
+        & \textbf{Reported value}
+        & \textbf{Role or qualification}\\
+        \midrule
+        Discount factor \(\gamma\)
+        & \(1.0\)
+        & No geometric discounting of future rewards\\
+        GAE parameter \(\lambda\)
+        & \(0.95\)
+        & Controls the temporal weighting in advantage estimation\\
+        PPO clipping coefficient \(\epsilon\)
+        & \(0.2\)
+        & Clips the probability ratio to \([0.8,1.2]\) in the surrogate objective\\
+        Value-function coefficient \(c_1\)
+        & \(0.1\)
+        & Weights the value-function loss\\
+        Gradient-norm threshold
+        & \(1.0\)
+        & Limits the gradient norm\\
+        Learning-rate schedule
+        & Linear
+        & Linear schedule during training\\
+        Generation temperature
+        & \(1.0\)
+        & Sampling temperature for response generation\\
+        Maximum prompt length
+        & 2,048 tokens
+        & Maximum prompt context length in the reported configuration\\
+        Maximum token length
+        & 2,048 tokens
+        & Maximum token limit in the reported configuration\\
+        Response length
+        & 2,048 tokens
+        & 1,024 tokens for GSM8K in the standard RLVR configuration\\
+        Learning rate
+        & \(3\times10^{-7}\)
+        & \(1\times10^{-7}\) for the reported 70B configuration\\
+        Effective batch size
+        & 224
+        & 640 for the reported 70B configuration\\
+        PPO update iterations
+        & 4
+        & Number of PPO update iterations in the RLVR column\\
+        Total episodes
+        & 100,000
+        & The final 70B run is reported separately with 400,000 episodes\\
+        KL coefficient \(\beta\)
+        & \(\{0.1,0.05,0.03,0.01\}\)
+        & Sweep values in the standard RLVR configuration\\
+        Warmup ratio \(\omega\)
+        & \(0\) or \(0.1\)
+        & Final 8B setting: \(0\); Table 21 70B setting: \(0.07\)\\
+        Non-EOS penalty
+        & \(-10\)
+        & Additional penalty for responses without an EOS token\\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+The paper reports a numerical inconsistency for the final 70B KL coefficient.
+Table 21 gives \(\beta=0.07\), while the prose describing the final 70B
+run in Section 6.4 reports \(\beta=0.7\). These values differ by a factor
+of ten, and the paper does not reconcile them. They should therefore not be
+silently treated as equivalent when reproducing the experiment. The same
+final-run discussion reports a learning rate of \(1\times10^{-7}\), a
+warmup ratio of \(0.1\), a response length of 2,048 tokens, 400,000
+episodes, and an effective batch size of 640. The warmup value also differs
+from the \(0.07\) listed in Table 21, so the prose and table should be
+consulted separately when reconstructing the exact run
+\parencite{lambert2025tulu3}.
+
+Several implementation decisions are important for interpreting these
+settings. The value model is initialized from a general reward model rather
+than directly from the DPO policy. The general reward model is trained on
+UltraFeedback data, but its predicted score is not used as the primary task
+reward in RLVR. It initializes the value model, whose purpose is to estimate
+returns for PPO. This distinction is important: replacing a learned reward
+model with a verifier does not remove the need for a value function in an
+actor--critic implementation.
+
+The authors disable dropout during reward-model and RL training. As
+explained above, PPO compares token log probabilities obtained during
+rollout and learning. If dropout changes the forward computation between
+these phases, the probability ratio may not equal one at the start of the
+first update. This can lead to excessive clipping and weak or vanishing
+policy gradients. Disabling dropout makes the probability calculations
+consistent under the same model parameters and inputs.
+
+The available prompt set is reused across multiple training epochs. In one
+GSM8K ablation, approximately 100,000 episodes are run using 7,473 prompts,
+which corresponds to
+
+\begin{equation}
+    \frac{100{,}000}{7{,}473}
+    \approx 13.38
+    \label{eq:rlvr-prompt-reuse}
+\end{equation}
+
+passes over the prompt set if reuse is approximately uniform. The prompts
+are shuffled between epochs. The authors also evaluate checkpoints during
+training and select checkpoints using development-set performance rather
+than relying only on the final training reward.
+
+A simple numerical example clarifies the expected-reward interpretation.
+Suppose, hypothetically, that a policy samples eight responses to one prompt
+and that five pass the verifier. With \(\alpha=10\), the empirical success
+frequency is \(5/8=0.625\), and the empirical mean verification reward is
+
+\begin{equation}
+    \widehat{\mathbb{E}}[v]
+    =
+    \frac{5(10)+3(0)}{8}
+    =
+    6.25.
+    \label{eq:rlvr-worked-reward}
+\end{equation}
+
+This value is an estimate of the expected reward for that prompt under the
+sampling policy. It is not a direct estimate of general reasoning ability:
+it measures the probability of satisfying the particular verifier under the
+particular prompt and generation procedure. A different verifier or prompt
+distribution can yield a different expected reward.
+
+The Tülu 3 experiments examine several factors that influence the final
+model. Initializing the value model from a general reward model performs
+better in the reported GSM8K ablation than initializing it from the DPO
+policy. Starting RLVR from a weaker SFT model can reach a similar level of
+training verification reward, but it incurs greater KL divergence than
+starting from the stronger DPO model; the authors also find that a stronger
+starting model generally produces better test performance. These findings
+show that reaching a particular training reward and generalizing well are
+not identical outcomes.
+
+The authors also test whether reward-model scores should be added to
+verifiable rewards. In their GSM8K experiments, using the verifiable reward
+alone performs better than combining it with reward-model scores, while the
+combined signal is noisier. This result supports the use of a direct
+verification signal when a reliable verifier is available, rather than
+assuming that an additional learned score must improve the optimization
+signal.
+
+The final performance comparison is reported for the 8B and 70B Tülu 3
+models. Selected results are reproduced in
+\cref{tab:rlvr-final-performance}. The comparison is between the DPO
+starting point and the RLVR-trained model; the base instruction-tuned model
+is included in the source paper but is not needed to isolate the effect of
+the RLVR stage.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Selected benchmark results for the Tülu 3 DPO starting points
+    and RLVR-trained models. Scores are reproduced from Table 23 of
+    \textcite{lambert2025tulu3}.}
+    \label{tab:rlvr-final-performance}
+    \small
+    \begin{tabularx}{\textwidth}{l r r r r}
+        \toprule
+        \textbf{Evaluation}
+        & \textbf{8B DPO}
+        & \textbf{8B RLVR}
+        & \textbf{70B DPO}
+        & \textbf{70B RLVR}\\
+        \midrule
+        Average score
+        & 64.4 & 64.8 & 75.9 & 76.0\\
+        MATH
+        & 42.0 & 43.7 & 62.3 & 63.0\\
+        GSM8K
+        & 84.3 & 87.6 & 93.5 & 93.5\\
+        IFEval (strict)
+        & 81.1 & 82.4 & 82.6 & 83.2\\
+        BigBenchHard
+        & 65.8 & 66.0 & 81.8 & 82.0\\
+        DROP
+        & 62.5 & 62.6 & 74.1 & 74.3\\
+        Safety6 task average
+        & 87.2 & 85.5 & 89.0 & 88.3\\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+At the 8B scale, the average score increases from 64.4 to 64.8. The
+GSM8K score rises by 3.3 percentage points, from 84.3 to 87.6, while MATH
+increases by 1.7 points and strict IFEval by 1.3 points. These changes
+demonstrate targeted gains on the mathematical and instruction-following
+tasks used to construct the verifiable training mixture. The average
+improvement is nevertheless modest, and not every evaluation improves:
+the Safety6 task average decreases from 87.2 to 85.5.
+
+At the 70B scale, the average score increases from 75.9 to 76.0. MATH
+increases from 62.3 to 63.0, and strict IFEval increases from 82.6 to
+83.2, while GSM8K remains at 93.5. The authors suggest that the lack of
+GSM8K improvement is related to the strong initial score, which leaves
+less room for improvement on that benchmark. The Safety6 task average
+also decreases slightly, from 89.0 to 88.3. The results therefore do not
+support the claim that RLVR improves every capability of a general-purpose
+language model. They support the narrower conclusion that it can improve
+selected capabilities while other dimensions remain unchanged or decline.
+
+The implementation also has substantial computational requirements.
+The Tülu 3 infrastructure uses ZeRO Stage 3 to distribute model parameters
+and applicable optimizer states across devices. The RLVR setup contains a
+policy model, a reference policy model, and a value model. The policy and
+value models are trained, whereas the reference policy is used for
+inference. The authors allocate dedicated inference GPUs and use Ray for
+resource allocation and vLLM with PagedAttention for efficient generation.
+PagedAttention uses paging-based memory management to reduce memory
+fragmentation and redundant duplication, enabling larger inference batches.
+
+The authors further use asynchronous reinforcement learning. In a
+synchronous setup, inference GPUs first generate rollout data and learner
+GPUs subsequently optimize the policy. These stages can leave one set of
+GPUs idle while the other is working. The Tülu 3 implementation overlaps
+inference and training to reduce this idle time. Asynchronous generation,
+however, can produce stale trajectories if inference generates data faster
+than the learner consumes it. To improve reproducibility, the implementation
+trains on the second most recent inference data rather than arbitrarily old
+rollouts. The reported RL run times are approximately 65 hours for the 8B
+run on 8 GPUs and 60 hours for the 70B run on 48 GPUs
+\parencite{lambert2025tulu3}. These figures are implementation-specific
+measurements, not universal estimates of the cost of RLVR.
+
+\subsection{Limitations, interpretation, and connection to GRPO}
+\label{subsec:rlvr-limitations-transition}
+
+The first limitation of RLVR is its dependence on the quality of the
+verification function. The policy is optimized against the criterion
+implemented by the verifier, not against an abstract notion of correctness
+that is independent of that implementation. If the verifier captures the
+intended objective reliably, maximizing its expected reward can improve the
+corresponding capability. If the verifier is incomplete or incorrectly
+specified, the model can learn to satisfy the implemented condition without
+achieving the intended outcome.
+
+For example, a verifier that checks only whether a required phrase appears
+in a response can reward a completion containing that phrase even if the
+response does not provide the explanation that the task requires. In such
+a case, policy optimization can be successful with respect to the formal
+reward and unsuccessful with respect to the intended task. This is not a
+failure specific to PPO; it follows from the definition of the optimization
+objective. The verifier defines the outcome being optimized, while the
+optimizer determines how the policy is changed to increase that outcome.
+
+A second limitation follows from the sparse binary reward. In a mathematical
+task, a response with largely correct intermediate reasoning but an
+incorrect final answer can receive the same zero reward as a response with
+entirely incorrect reasoning. Conversely, two correct responses receive
+the same positive reward even if one is more concise or uses a more
+efficient derivation. The mapping
+
+\begin{equation}
+    v(x,y)\in\{0,\alpha\}
+    \label{eq:rlvr-sparse-reward}
+\end{equation}
+
+discards information about degrees of partial correctness, reasoning quality,
+and the efficiency of the solution. The value function and advantage
+estimator can improve the statistical use of sampled trajectories, but
+they do not add information that is absent from the verifier's reward.
+
+A third limitation is overoptimization. Reducing \(\beta\) makes divergence
+from the reference policy less costly in the objective and generally permits
+the policy to move farther from its initial distribution. This can increase
+the targeted verification reward, but it can also damage performance on
+other evaluations or produce undesirable forms of specialization. The
+Tülu 3 experiments report that higher KL divergence is often associated
+with lower average scores in some settings, although this relationship is
+not universal. The authors also identify overoptimized outputs in some
+higher-KL instruction-following runs. Thus, KL divergence is a useful
+diagnostic, but neither a large nor a small value should be interpreted
+without considering task performance and independent evaluations.
+
+A fourth limitation concerns generalization. The training objective is
+defined over a finite distribution of prompts and associated verifiers.
+High reward on this distribution does not mathematically guarantee transfer
+to new prompts, new task formulations, or capabilities not measured by the
+verifier. The Tülu 3 results show that training improvements can translate
+to corresponding test benchmarks, but they also show that broader evaluation
+metrics may remain unchanged or decline. Training reward must therefore be
+considered together with held-out evaluations and broader capability
+measurements.
+
+The experiments also show that a verifier-based reward is not automatically
+improved by combining it with a learned reward-model score. In the reported
+GSM8K ablation, the verifiable reward alone performs better, while the
+combined signal is noisier. This is a useful methodological result, but it
+should not be generalized to every possible task or verifier. The conclusion
+supported by the experiment is that adding a learned score is not inherently
+beneficial when a direct verification signal is already available.
+
+Finally, PPO-based RLVR has nontrivial computational demands. Response
+generation, policy optimization, reference-policy evaluation, and value
+estimation must be coordinated. Distributed model placement and asynchronous
+rollouts can improve hardware utilization, but asynchronous execution
+introduces the possibility of stale data and reproducibility difficulties.
+The training recipe is consequently part of the method: a mathematically
+appropriate reward objective is not sufficient if its implementation
+produces unstable probability ratios, unreliable advantage estimates, or
+rollouts that are too stale for the intended update.
+
+The central result of this section is that verifiable outcomes can provide
+a direct reinforcement-learning signal for language models whenever a
+reliable evaluator exists. RLVR retains the autoregressive policy, uses a
+binary or otherwise explicitly verifiable reward, regularizes policy
+movement relative to a reference distribution, and employs an optimizer
+such as PPO to convert sampled outcomes into parameter updates. The Tülu 3
+experiments demonstrate the approach on mathematical reasoning and precise
+instruction following, while also exposing the importance of verifier
+quality, value estimation, KL control, initialization, generalization, and
+computational infrastructure.
+
+This formulation separates the definition of the reward from the choice of
+the policy-optimization algorithm. PPO uses a learned value function to
+construct advantages and a clipped probability-ratio objective to control
+updates. The next section examines Group Relative Policy Optimization
+(GRPO), an alternative optimization approach for verifiable-reward
+training. It builds on the same general setting of sampled responses and
+verifiable outcomes but changes how relative performance information is
+used to construct the policy update.

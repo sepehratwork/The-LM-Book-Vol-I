@@ -1,0 +1,34 @@
+% Figure source fragment: tiled FlashAttention with online softmax.
+% This file is inserted inside a figure environment using \input.
+\begin{center}
+\setlength{\fboxsep}{5pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{cc}
+    \fbox{\parbox[c][0.9cm][c]{0.32\textwidth}{\centering
+        \textbf{Query and key tiles}\\
+        \(Q_i,\;K_j\)}} &
+    \fbox{\parbox[c][0.9cm][c]{0.32\textwidth}{\centering
+        \textbf{Value tile}\\
+        \(V_j\)}}
+\end{tabular}\\[0.3em]
+\(\downarrow\hspace{2.8cm}\downarrow\)\\[0.2em]
+\begin{tabular}{cc}
+    \fbox{\parbox[c][0.9cm][c]{0.32\textwidth}{\centering
+        \textbf{Local score tile}\\
+        \(S_{ij}=Q_iK_j^\top/\sqrt{d_k}\)}} &
+    \fbox{\parbox[c][0.9cm][c]{0.32\textwidth}{\centering
+        \textbf{Value tile}\\
+        \(V_j\)}}
+\end{tabular}\\[0.3em]
+\(\searrow\hspace{0.8cm}\swarrow\)\\[0.2em]
+\fbox{\parbox[c][1.95cm][c]{0.72\textwidth}{\centering
+    \textbf{Online softmax state}\\[0.2em]
+    Running maximum \(m\), normalization denominator \(\ell\),\\
+    and value accumulator \(U\).\\
+    Update the state for each successive key--value tile.}}
+\\[0.3em]
+\(\downarrow\)\\[0.2em]
+\fbox{\parbox[c][0.85cm][c]{0.62\textwidth}{\centering
+    \textbf{Normalized output tile}\\
+    \(O_i=U/\ell\)}}
+\end{center}

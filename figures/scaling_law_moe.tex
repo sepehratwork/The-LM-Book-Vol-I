@@ -1,0 +1,19 @@
+% Schematic distinction between dense and mixture-of-experts parameter use.
+\begingroup
+\setlength{\unitlength}{0.8mm}
+\begin{picture}(150,60)
+    \put(5,51){\makebox(58,5)[c]{\textbf{Dense feed-forward block}}}
+    \put(85,51){\makebox(60,5)[c]{\textbf{Mixture of experts}}}
+    \put(8,34){\framebox(45,11){Shared parameters}}
+    \put(30,25){\vector(0,1){8}}
+    \put(30,17){\makebox(0,0)[c]{\(\text{each token}\)}}
+    \put(88,35){\framebox(18,9){Expert 1}}
+    \put(111,35){\framebox(18,9){Expert 2}}
+    \put(134,35){\framebox(12,9){\(\cdots\)}}
+    \put(105,23){\framebox(25,8){Router}}
+    \put(117,31){\vector(0,1){3}}
+    \put(117,14){\vector(0,1){8}}
+    \put(117,8){\makebox(0,0)[c]{Token}}
+    \put(5,2){\makebox(140,5)[l]{MoE stores many expert parameters but activates a selected subset per token.}}
+\end{picture}
+\endgroup

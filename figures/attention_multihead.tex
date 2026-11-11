@@ -1,0 +1,36 @@
+% Figure source fragment: multi-head attention.
+% This file is inserted inside a figure environment using \input.
+\begin{center}
+\setlength{\fboxsep}{5pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{c}
+    \fbox{\parbox[c][0.75cm][c]{0.55\textwidth}{\centering
+        \textbf{Shared input sequence} \(X\)}}\\[0.3em]
+    \(\swarrow\hspace{0.8cm}\downarrow\hspace{0.8cm}\searrow\)\\[0.2em]
+    \begin{tabular}{ccccc}
+        \fbox{\parbox[c][0.95cm][c]{0.16\textwidth}{\centering
+            \textbf{Head 1}\\
+            \(Q_h,K_h,V_h\)}} &
+        \fbox{\parbox[c][0.95cm][c]{0.16\textwidth}{\centering
+            \textbf{Head 2}\\
+            \(Q_h,K_h,V_h\)}} &
+        \(\cdots\) &
+        \fbox{\parbox[c][0.95cm][c]{0.16\textwidth}{\centering
+            \textbf{Head \(H-1\)}\\
+            \(Q_h,K_h,V_h\)}} &
+        \fbox{\parbox[c][0.95cm][c]{0.16\textwidth}{\centering
+            \textbf{Head \(H\)}\\
+            \(Q_h,K_h,V_h\)}}
+    \end{tabular}\\[0.35em]
+    \(\downarrow\hspace{0.45cm}\downarrow\hspace{0.65cm}
+      \cdots\hspace{0.65cm}\downarrow\hspace{0.45cm}\downarrow\)\\[0.2em]
+    \fbox{\parbox[c][0.85cm][c]{0.67\textwidth}{\centering
+        \textbf{Concatenation}\\
+        \(C=\operatorname{Concat}(\operatorname{head}_1,\ldots,
+        \operatorname{head}_H)\)}}\\[0.3em]
+    \(\downarrow\;W_O\)\\[0.2em]
+    \fbox{\parbox[c][0.85cm][c]{0.55\textwidth}{\centering
+        \textbf{Output projection}\\
+        \(\operatorname{MHA}(X)=CW_O\)}}
+\end{tabular}
+\end{center}

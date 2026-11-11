@@ -1,0 +1,35 @@
+% Figure source fragment: principal quantization targets in an LLM.
+% This file is inserted inside a figure environment using \input.
+\begin{center}
+\setlength{\fboxsep}{6pt}
+\begin{tabular}{ccc}
+    & \fbox{\parbox[c][0.85cm][c]{0.36\textwidth}{\centering
+        \textbf{Large language model}\\
+        Transformer computation}} & \\[0.35em]
+    \(\swarrow\) & \(\downarrow\) & \(\searrow\) \\[0.2em]
+    \fbox{\parbox[c][0.95cm][c]{0.27\textwidth}{\centering
+        \textbf{Weights}\\
+        Learned parameters}}
+    &
+    \fbox{\parbox[c][0.95cm][c]{0.27\textwidth}{\centering
+        \textbf{Activations}\\
+        Runtime representations}}
+    &
+    \fbox{\parbox[c][0.95cm][c]{0.27\textwidth}{\centering
+        \textbf{Weight--activation}\\
+        Joint quantization}}
+    \\[0.45em]
+    \(\searrow\) & \(\downarrow\) & \(\swarrow\) \\[0.2em]
+    \multicolumn{3}{c}{
+    \fbox{\parbox[c][0.90cm][c]{0.48\textwidth}{\centering
+        \textbf{Training and inference targets}}}}\\[0.35em]
+    \(\swarrow\) & & \(\searrow\) \\[0.2em]
+    \fbox{\parbox[c][0.95cm][c]{0.30\textwidth}{\centering
+        \textbf{Gradients}\\
+        Optimization updates}}
+    &&
+    \fbox{\parbox[c][0.95cm][c]{0.30\textwidth}{\centering
+        \textbf{KV cache}\\
+        Reused token states}}
+\end{tabular}
+\end{center}

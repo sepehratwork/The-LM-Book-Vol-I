@@ -1,0 +1,1205 @@
+% ============================================================================
+% 03_optimization/05_peft.tex
+% Section-body file: include immediately after the corresponding \section
+% command in the master document. No \chapter or \section command is defined
+% here, and the global bibliography is printed by the master document.
+% ============================================================================
+
+The preceding sections have established the optimization procedures and
+training objectives used to construct and improve language models. They have
+also considered techniques such as quantization and distillation that reduce
+the computational or representational cost of training and deployment. A
+closely related problem arises after pretraining: a model that has acquired
+general-purpose linguistic representations must often be adapted to a
+particular domain, task, or application. The central question is whether this
+adaptation requires changing every parameter of the pretrained model.
+
+Full fine-tuning provides a direct answer by allowing all model parameters to
+change. For modern large language models, however, the resulting memory,
+computation, and storage requirements can be substantial. Moreover, when one
+pretrained model must serve many downstream tasks, maintaining a complete
+fine-tuned copy for every task duplicates most of the original model. Parameter-
+efficient fine-tuning (PEFT) addresses this problem by restricting the
+task-specific optimization to a small subset of existing parameters, by
+introducing lightweight trainable modules, or by reparameterizing the update
+so that it is represented with fewer degrees of freedom. The objective is not
+to replace the pretrained model with a smaller network, but to adapt its
+existing computational structure with a smaller task-specific optimization
+problem \parencite{prottasha2025peft,he2025smt}.
+
+\subsection{From Full Fine-Tuning to Parameter-Efficient Adaptation}
+\label{subsec:peft-motivation}
+
+A language model can be represented as a parameterized function
+\begin{equation}
+    f_{\boldsymbol{\theta}}:\mathcal{X}\rightarrow\mathcal{Y},
+    \qquad
+    \boldsymbol{\theta}\in\mathbb{R}^{P},
+    \label{eq:peft-model-function}
+\end{equation}
+where $\mathcal{X}$ and $\mathcal{Y}$ denote the input and output spaces,
+$\boldsymbol{\theta}$ is the vector containing the model parameters, and $P$
+is the number of scalar parameters. In a large language model, $P$ may reach
+billions. The pretrained parameter vector is denoted by
+$\boldsymbol{\theta}_0$. It is obtained by optimizing a pretraining objective
+over a large corpus. For an autoregressive language model, a representative
+objective for a token sequence $x_1,\ldots,x_T$ is
+\begin{equation}
+    \mathcal{L}_{\mathrm{pretrain}}(\boldsymbol{\theta})
+    =
+    -\sum_{t=1}^{T}
+    \log p_{\boldsymbol{\theta}}(x_t\mid x_{<t}),
+    \label{eq:peft-pretraining-objective}
+\end{equation}
+where $x_{<t}$ denotes the tokens preceding position $t$. The resulting
+$\boldsymbol{\theta}_0$ provides an initialization that already encodes
+statistical regularities learned from the pretraining distribution.
+
+For a downstream task, let
+\begin{equation}
+    \mathcal{D}_{\mathrm{task}}
+    =
+    \{(x_i,y_i)\}_{i=1}^{N}
+    \label{eq:peft-downstream-dataset}
+\end{equation}
+be a dataset of $N$ input-target pairs. The task-specific empirical risk is
+\begin{equation}
+    \mathcal{L}_{\mathrm{task}}(\boldsymbol{\theta})
+    =
+    \frac{1}{N}\sum_{i=1}^{N}
+    \ell\!\left(f_{\boldsymbol{\theta}}(x_i),y_i\right),
+    \label{eq:peft-task-loss}
+\end{equation}
+where $\ell$ is the loss appropriate to the task. For classification it may
+be cross-entropy; for autoregressive generation it may be token-level
+negative log-likelihood. Full fine-tuning solves
+\begin{equation}
+    \boldsymbol{\theta}^{*}
+    =
+    \arg\min_{\boldsymbol{\theta}\in\mathbb{R}^{P}}
+    \mathcal{L}_{\mathrm{task}}(\boldsymbol{\theta}),
+    \qquad
+    \boldsymbol{\theta}^{(0)}=\boldsymbol{\theta}_0.
+    \label{eq:peft-full-ft}
+\end{equation}
+The complete pretrained parameter vector is therefore the optimization
+variable. At iteration $t$, a gradient method evaluates
+\begin{equation}
+    \mathbf{g}^{(t)}
+    =
+    \nabla_{\boldsymbol{\theta}}
+    \mathcal{L}_{\mathrm{task}}
+    \bigl(\boldsymbol{\theta}^{(t)}\bigr)
+    \label{eq:peft-full-gradient}
+\end{equation}
+and, in the case of gradient descent, updates
+\begin{equation}
+    \boldsymbol{\theta}^{(t+1)}
+    =
+    \boldsymbol{\theta}^{(t)}-\eta\mathbf{g}^{(t)},
+    \label{eq:peft-gd-update}
+\end{equation}
+where $\eta>0$ is the learning rate. In full fine-tuning, every component of
+$\boldsymbol{\theta}$ is eligible for an update.
+
+The memory cost is not limited to the model weights. Training also requires
+gradient storage, optimizer state, and intermediate activations needed by
+backpropagation. For Adam, the first and second moment estimates are
+\begin{align}
+    \mathbf{m}_t
+    &=
+    \beta_1\mathbf{m}_{t-1}
+    +(1-\beta_1)\mathbf{g}_t,
+    \label{eq:peft-adam-m}\\
+    \mathbf{v}_t
+    &=
+    \beta_2\mathbf{v}_{t-1}
+    +(1-\beta_2)\mathbf{g}_t^{\odot 2},
+    \label{eq:peft-adam-v}
+\end{align}
+where $\beta_1,\beta_2\in[0,1)$ are decay coefficients and $\odot$ denotes
+element-wise multiplication. The bias-corrected estimates are
+\begin{equation}
+    \widehat{\mathbf{m}}_t
+    =
+    \frac{\mathbf{m}_t}{1-\beta_1^t},
+    \qquad
+    \widehat{\mathbf{v}}_t
+    =
+    \frac{\mathbf{v}_t}{1-\beta_2^t},
+    \label{eq:peft-adam-bias-correction}
+\end{equation}
+and the Adam update is
+\begin{equation}
+    \boldsymbol{\theta}_{t+1}
+    =
+    \boldsymbol{\theta}_t
+    -
+    \eta
+    \frac{\widehat{\mathbf{m}}_t}
+    {\sqrt{\widehat{\mathbf{v}}_t}+\epsilon},
+    \label{eq:peft-adam-update}
+\end{equation}
+where $\epsilon$ is a small positive constant for numerical stability.
+Consequently, the optimizer maintains additional quantities whose sizes
+scale with the number of trainable parameters.
+
+A useful first-order memory accounting model is
+\begin{equation}
+    M_{\mathrm{FT}}
+    \approx
+    P(b_w+b_g+b_m+b_v)+M_{\mathrm{act}},
+    \label{eq:peft-full-memory}
+\end{equation}
+where $b_w$, $b_g$, $b_m$, and $b_v$ are the bytes per parameter used for
+weights, gradients, first moments, and second moments, respectively, and
+$M_{\mathrm{act}}$ is the activation memory. This is an accounting model, not
+a universal implementation-specific formula: precision, optimizer
+implementation, activation checkpointing, gradient accumulation, and
+offloading change the actual footprint.
+
+The scale of the problem is illustrated by the LLaMA-7B example reported by
+\textcite{he2025smt}. In their stated configuration, full fine-tuning without
+CPU offloading requires approximately $58$ GB of GPU memory: about $13.6$ GB
+for trainable parameters, $40$ GB for Adam optimizer states and gradients, and
+$2$ GB for activations. The exact values depend on the implementation and
+precision, but the example shows why weight storage alone is an inadequate
+estimate of training memory.
+
+Full fine-tuning also has a multi-task storage cost. If a pretrained model
+with $P$ parameters is independently fine-tuned for $K$ tasks, storing all
+task-specific copies requires approximately
+\begin{equation}
+    S_{\mathrm{FT}}=KP.
+    \label{eq:peft-ft-storage}
+\end{equation}
+If the base model is shared and each task stores only $q$ adaptation
+parameters, where $q\ll P$, the corresponding storage is
+\begin{equation}
+    S_{\mathrm{PEFT}}=P+Kq.
+    \label{eq:peft-storage}
+\end{equation}
+The ratio is
+\begin{equation}
+    \frac{S_{\mathrm{PEFT}}}{S_{\mathrm{FT}}}
+    =
+    \frac{1}{K}+\frac{q}{P}.
+    \label{eq:peft-storage-ratio}
+\end{equation}
+Thus, the storage advantage becomes increasingly important as the number of
+downstream tasks grows.
+
+The statistical motivation is related but distinct. A model with a very large
+number of adjustable parameters can fit complex patterns, but a downstream
+dataset may contain relatively few examples. In such a setting, unrestricted
+adaptation can increase estimation variance and overfitting. The PEFT survey
+describes restricted, structured updates as a form of implicit
+regularization that can be beneficial in low-resource settings
+\parencite{prottasha2025peft}. Restricting updates can also reduce interference
+with pretrained knowledge and thereby mitigate, but does not guarantee the
+elimination of, catastrophic forgetting. The central design question is
+therefore how to restrict the update space without preventing the model from
+learning the task-specific information it needs.
+
+\paragraph{General formulation and taxonomy.}
+
+The common mathematical structure of PEFT is to replace unrestricted
+optimization over $\boldsymbol{\theta}\in\mathbb{R}^{P}$ with optimization
+over a smaller task-specific parameter vector
+$\boldsymbol{\phi}\in\mathbb{R}^{q}$, where $q\ll P$. A general update
+parameterization is
+\begin{equation}
+    \Delta\boldsymbol{\theta}
+    =
+    g(\boldsymbol{\phi}),
+    \qquad
+    \boldsymbol{\theta}_{\mathrm{eff}}
+    =
+    \boldsymbol{\theta}_0+g(\boldsymbol{\phi}),
+    \label{eq:peft-general-update}
+\end{equation}
+where $g$ maps the lower-dimensional adaptation variables into an update of
+the pretrained parameters. The optimization problem becomes
+\begin{equation}
+    \boldsymbol{\phi}^{*}
+    =
+    \arg\min_{\boldsymbol{\phi}\in\mathbb{R}^{q}}
+    \frac{1}{N}\sum_{i=1}^{N}
+    \ell\!\left(
+        f_{\boldsymbol{\theta}_0+g(\boldsymbol{\phi})}(x_i),y_i
+    \right).
+    \label{eq:peft-reduced-objective}
+\end{equation}
+The pretrained parameters may remain fixed, while gradients are propagated
+through the model to optimize $\boldsymbol{\phi}$. In methods that add modules
+rather than explicitly reparameterize the original weights, the model can be
+written more directly as
+$f_{\boldsymbol{\theta}_0,\boldsymbol{\phi}}(x)$.
+
+Selective fine-tuning can be represented using a binary mask
+$\mathbf{M}\in\{0,1\}^{P}$:
+\begin{equation}
+    \boldsymbol{\theta}_{\mathrm{eff}}
+    =
+    \boldsymbol{\theta}_0+
+    \mathbf{M}\odot\Delta\boldsymbol{\theta},
+    \qquad
+    q=\|\mathbf{M}\|_0,
+    \label{eq:peft-selection-mask}
+\end{equation}
+where $\|\mathbf{M}\|_0$ counts the selected scalar parameters. A value of
+one permits an update, while zero freezes the corresponding parameter.
+Other PEFT families do not necessarily use a binary mask, but they share the
+principle of reducing the number of independent adaptation variables.
+
+The survey by \textcite{prottasha2025peft} organizes PEFT techniques around
+additive, selective, reparameterized, hybrid, and unified approaches, and
+separately discusses mixture-of-experts-based variants. These categories
+describe different ways of controlling the adaptation space. Additive
+methods introduce task-specific modules or representations. Selective methods
+choose a subset of existing parameters. Reparameterized methods express
+weight changes through lower-dimensional variables. Hybrid and unified
+frameworks combine multiple mechanisms, while mixture-of-experts designs
+route inputs or tokens among specialized adaptation components. Figure
+\ref{fig:peft-taxonomy} summarizes this conceptual organization.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/peft_taxonomy}
+    \caption{Conceptual taxonomy of parameter-efficient fine-tuning. The
+    branches summarize the principal families discussed by
+    \textcite{prottasha2025peft}; the diagram is an original schematic rather
+    than a reproduction of the survey figure.}
+    \label{fig:peft-taxonomy}
+\end{figure}
+% Alt text for accessibility register: A root node labelled PEFT branches into
+% additive, selective, reparameterized, hybrid/unified, and mixture-of-experts
+% adaptation families, each with a short description of its mechanism.
+
+The categories should not be interpreted as mutually exclusive mathematical
+classes. A method can combine an additive module with a low-rank update, or
+use a sparse selection rule to determine where a reparameterized update is
+applied. The classification is useful because it identifies the principal
+mechanism that controls the trainable parameter space.
+
+\subsection{Additive and Prompt-Based Adaptation}
+\label{subsec:peft-additive-prompts}
+
+Additive fine-tuning introduces trainable modules or representations into
+the existing model while retaining the pretrained backbone. The added
+parameters encode task-specific transformations, and the original model
+parameters can remain frozen. Adapters and soft prompts are two important
+examples \parencite{prottasha2025peft}.
+
+\paragraph{Serial adapters.}
+A serial adapter is commonly implemented as a bottleneck transformation.
+Let $\mathbf{h}\in\mathbb{R}^{d}$ be a hidden representation, and let
+$d_b\ll d$ be the bottleneck dimension. The down-projection is
+\begin{equation}
+    \mathbf{h}_{\mathrm{down}}
+    =
+    \operatorname{ReLU}
+    \left(
+        \mathbf{W}_{\mathrm{down}}\mathbf{h}
+        +\mathbf{b}_{\mathrm{down}}
+    \right),
+    \qquad
+    \mathbf{W}_{\mathrm{down}}\in\mathbb{R}^{d_b\times d},
+    \label{eq:peft-adapter-down}
+\end{equation}
+and the up-projection is
+\begin{equation}
+    \mathbf{h}_{\mathrm{up}}
+    =
+    \mathbf{W}_{\mathrm{up}}\mathbf{h}_{\mathrm{down}}
+    +\mathbf{b}_{\mathrm{up}},
+    \qquad
+    \mathbf{W}_{\mathrm{up}}\in\mathbb{R}^{d\times d_b}.
+    \label{eq:peft-adapter-up}
+\end{equation}
+The output is added through a residual connection:
+\begin{equation}
+    \mathbf{h}_{\mathrm{out}}
+    =
+    \mathbf{h}+\mathbf{h}_{\mathrm{up}}.
+    \label{eq:peft-adapter-residual}
+\end{equation}
+Ignoring biases, one adapter contains
+\begin{equation}
+    P_{\mathrm{adapter}}
+    =
+    dd_b+d_bd
+    =
+    2dd_b
+    \label{eq:peft-adapter-parameters}
+\end{equation}
+trainable parameters. A dense $d\times d$ transformation contains $d^2$
+parameters, so the ratio is $2d_b/d$. If one adapter is inserted in each of
+$L$ layers, the approximate count is $2Ldd_b$, subject to the particular
+placement and architecture. The bottleneck creates a capacity-efficiency
+trade-off: a larger $d_b$ permits a richer transformation but increases
+parameters and computation.
+
+\paragraph{Parallel and hybrid adapters.}
+A parallel adapter processes a representation alongside the main model
+pathway. If its output is
+\begin{equation}
+    \mathbf{h}_{\mathrm{parallel}}
+    =
+    \mathbf{W}_{\mathrm{parallel}}\mathbf{h}
+    +\mathbf{b}_{\mathrm{parallel}},
+    \label{eq:peft-parallel-adapter}
+\end{equation}
+the combined representation can be written as
+\begin{equation}
+    \mathbf{h}_{\mathrm{out}}
+    =
+    \mathbf{h}_{\mathrm{main}}
+    +\alpha\mathbf{h}_{\mathrm{parallel}},
+    \label{eq:peft-parallel-combine}
+\end{equation}
+where $\alpha$ controls the contribution of the parallel pathway. Hybrid
+adapters combine serial and parallel pathways, for example,
+\begin{equation}
+    \mathbf{h}_{\mathrm{out}}
+    =
+    \beta\mathbf{h}_{\mathrm{serial}}
+    +\gamma\mathbf{h}_{\mathrm{parallel}},
+    \label{eq:peft-hybrid-adapter}
+\end{equation}
+with coefficients $\beta$ and $\gamma$. The survey discusses serial,
+parallel, and hybrid designs, as well as single-task and multi-task adapter
+use cases \parencite{prottasha2025peft}. Figure \ref{fig:peft-adapter-prompt}
+contrasts the broad idea of inserting a trainable adapter with that of
+introducing trainable prompt representations.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/peft_adapter_prompt}
+    \caption{Conceptual comparison of adapter-based and prompt-based
+    adaptation. Adapters add trainable transformations within the model
+    pathway, whereas prompt methods add trainable representations to the
+    input or attention context. Original schematic based on the mechanisms
+    surveyed by \textcite{prottasha2025peft}.}
+    \label{fig:peft-adapter-prompt}
+\end{figure}
+% Alt text for accessibility register: The left pathway shows a frozen
+% pretrained backbone with a small trainable adapter residual branch. The
+% right pathway shows trainable prompt vectors concatenated with token
+% embeddings before entering a frozen Transformer.
+
+\paragraph{Soft prompt tuning.}
+Let the token embedding sequence for an input $x$ be
+$\mathbf{E}(x)\in\mathbb{R}^{n\times d}$, where $n$ is the number of input
+tokens and $d$ is the embedding dimension. Soft prompt tuning introduces
+$m$ trainable vectors,
+\begin{equation}
+    \mathbf{P}\in\mathbb{R}^{m\times d},
+    \label{eq:peft-soft-prompt}
+\end{equation}
+and concatenates them with the input embeddings:
+\begin{equation}
+    \mathbf{X}_{\mathrm{prompt}}
+    =
+    [\mathbf{P};\mathbf{E}(x)]
+    \in\mathbb{R}^{(m+n)\times d}.
+    \label{eq:peft-prompt-concat}
+\end{equation}
+The pretrained model is frozen and the prompt is optimized:
+\begin{equation}
+    \mathbf{P}^{*}
+    =
+    \arg\min_{\mathbf{P}}
+    \mathcal{L}
+    \left(
+        f_{\boldsymbol{\theta}_0}
+        ([\mathbf{P};\mathbf{E}(x)]),y
+    \right).
+    \label{eq:peft-prompt-objective}
+\end{equation}
+The prompt contains $md$ trainable scalar values. Unlike a discrete prompt,
+whose elements are vocabulary tokens, a soft prompt is a continuous matrix
+of trainable embeddings and is not required to correspond to ordinary words.
+
+\paragraph{Prefix tuning.}
+Prefix tuning extends the prompt principle into the attention computation.
+For query, key, and value matrices $\mathbf{Q}$, $\mathbf{K}$, and
+$\mathbf{V}$, introduce trainable prefix key and value representations
+$\mathbf{P}_K$ and $\mathbf{P}_V$. The attention operation becomes
+\begin{equation}
+    \operatorname{Attention}
+    \left(
+        \mathbf{Q},
+        [\mathbf{P}_K;\mathbf{K}],
+        [\mathbf{P}_V;\mathbf{V}]
+    \right)
+    =
+    \operatorname{softmax}
+    \left(
+        \frac{
+            \mathbf{Q}[\mathbf{P}_K;\mathbf{K}]^{\mathsf T}
+        }{\sqrt{d_k}}
+    \right)
+    [\mathbf{P}_V;\mathbf{V}],
+    \label{eq:peft-prefix-attention}
+\end{equation}
+where $d_k$ is the key dimension. Prompt tuning modifies the input
+embedding sequence, whereas prefix tuning makes trainable contextual
+representations available within attention. The survey also discusses
+multi-layer continuous prompts such as P-Tuning v2, as well as discrete
+prompt optimization methods such as RLPrompt and sparse prompt selection
+\parencite{prottasha2025peft}.
+
+For a discrete prompt, token identities are not ordinary continuous
+optimization variables. One alternative is to optimize a policy over
+candidate token sequences. If $\boldsymbol{\psi}$ denotes policy parameters
+and $R(P)$ is the reward associated with a prompt $P$, a policy-gradient
+update has the form
+\begin{equation}
+    \boldsymbol{\psi}_{t+1}
+    =
+    \boldsymbol{\psi}_{t}
+    +
+    \eta\nabla_{\boldsymbol{\psi}}
+    \mathbb{E}[R(P)].
+    \label{eq:peft-rlprompt}
+\end{equation}
+Sparse prompt selection can instead be expressed as
+\begin{equation}
+    P_{\mathrm{sparse}}^{*}
+    =
+    \arg\min_{P}\|P\|_0
+    \quad
+    \text{subject to}
+    \quad
+    R(P)\geq R_{\mathrm{threshold}},
+    \label{eq:peft-sparse-prompt}
+\end{equation}
+where $\|P\|_0$ counts the selected prompt elements. These formulations
+illustrate that prompt-based PEFT can optimize either continuous embeddings
+or a policy that generates discrete prompts.
+
+\paragraph{Scaling-based adaptation.}
+The survey also describes Propulsion, which modifies feature representations
+through trainable scaling values. For feature groups
+$\mathbf{V}=[v_1,\ldots,v_s]$, its transformation is expressed as
+\begin{equation}
+    \mathbf{V}'
+    =
+    [v_1\odot z_1^k,\,
+     v_2\odot z_2^k,\,
+     \ldots,\,
+     v_s\odot z_s^k],
+    \label{eq:peft-propulsion}
+\end{equation}
+where $z_i$ is a trainable scaling parameter, $k$ is a scaling exponent, and
+$\odot$ denotes element-wise multiplication. This mechanism changes the
+relative contribution of feature components without introducing a complete
+dense transformation.
+
+Additive and prompt-based methods are parameter-efficient, but they do not
+eliminate all computation. Adapters add operations to the forward path.
+Prompt and prefix methods increase the effective context length; if the
+attention sequence grows from $n$ to $n+m$, the dense attention score matrix
+grows from $n\times n$ to $(n+m)\times(n+m)$. Its leading pairwise
+interaction cost therefore changes from $\mathcal{O}(n^2)$ to
+$\mathcal{O}((n+m)^2)$. A small trainable parameter count should consequently
+not be confused with a proportionate reduction in inference computation.
+
+\subsection{Selective and Reparameterized Adaptation}
+\label{subsec:peft-selective-reparameterized}
+
+Selective fine-tuning does not introduce a new transformation as its defining
+operation. Instead, it chooses which existing parameters may change. Partition
+the pretrained parameters into selected and frozen components,
+\begin{equation}
+    \boldsymbol{\theta}
+    =
+    \{\boldsymbol{\theta}_{s},
+      \boldsymbol{\theta}_{f}\},
+    \qquad
+    \boldsymbol{\theta}_{f}=\text{constant}.
+    \label{eq:peft-selected-partition}
+\end{equation}
+The optimization is
+\begin{equation}
+    \boldsymbol{\theta}_{s}^{*}
+    =
+    \arg\min_{\boldsymbol{\theta}_{s}}
+    \mathcal{L}
+    \left(
+        f_{\boldsymbol{\theta}_{s},\boldsymbol{\theta}_{f}}(x),y
+    \right).
+    \label{eq:peft-selective-objective}
+\end{equation}
+The key problem is the selection rule.
+
+\paragraph{Gradient and Fisher-information criteria.}
+For parameter $\theta_i$, the local sensitivity of the loss is described by
+\begin{equation}
+    g_i
+    =
+    \frac{\partial\mathcal{L}}{\partial\theta_i}.
+    \label{eq:peft-parameter-gradient}
+\end{equation}
+A simple importance score is $C(\theta_i)=|g_i|$. Parameters with large
+scores may be selected, subject to a trainable-parameter budget. This score
+is local: it depends on the current model, data batch, and loss, and is not a
+task-independent measure of universal parameter importance.
+
+A statistical alternative is Fisher information. For a model distribution
+$p(x;\boldsymbol{\theta})$, the diagonal Fisher information associated with
+parameter $\theta_i$ is
+\begin{equation}
+    I(\theta_i)
+    =
+    \mathbb{E}
+    \left[
+        \left(
+            \frac{\partial\log p(x;\boldsymbol{\theta})}
+                 {\partial\theta_i}
+        \right)^2
+    \right].
+    \label{eq:peft-fisher}
+\end{equation}
+An empirical approximation over $N$ observations is
+\begin{equation}
+    \widehat{I}(\theta_i)
+    =
+    \frac{1}{N}\sum_{j=1}^{N}
+    \left(
+        \frac{\partial\log p(x_j;\boldsymbol{\theta})}
+             {\partial\theta_i}
+    \right)^2.
+    \label{eq:peft-empirical-fisher}
+\end{equation}
+Large diagonal Fisher values indicate that the log-likelihood is sensitive
+to the corresponding parameters under the sampled distribution. The survey
+discusses Fisher-based selection methods such as FishMask and Adafish, as
+well as gradient-based selection methods \parencite{prottasha2025peft}.
+
+\paragraph{Unstructured and structured selection.}
+Unstructured selection chooses individual scalar parameters, potentially at
+irregular positions throughout the model. BitFit, Child-Tuning, and other
+sparsity-based methods illustrate this family. Structured selection chooses
+coherent groups such as layers, heads, rows, columns, or blocks. A binary
+mask can enforce a selection pattern:
+\begin{equation}
+    \boldsymbol{\theta}_{s}
+    =
+    \mathbf{M}\odot\boldsymbol{\theta},
+    \qquad
+    \mathbf{M}\in\{0,1\}^{P}.
+    \label{eq:peft-structured-mask}
+\end{equation}
+Structured patterns can be easier to implement efficiently because they
+preserve contiguous parameter groups. Unstructured sparsity may select more
+precisely, but irregular memory access and indexing overhead can reduce the
+hardware benefit. The survey discusses methods including UBitFit, LT-SFT,
+Child-Tuning, RoCoFT, Xattn Tuning, and structured masking approaches
+\parencite{prottasha2025peft}.
+
+\paragraph{Low-rank reparameterization.}
+Reparameterized PEFT constrains the weight update rather than selecting
+individual original parameters. Consider a linear transformation
+\begin{equation}
+    \mathbf{y}
+    =
+    \mathbf{W}_0\mathbf{x},
+    \qquad
+    \mathbf{W}_0
+    \in
+    \mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}.
+    \label{eq:peft-linear-base}
+\end{equation}
+Full fine-tuning permits an arbitrary matrix update
+$\Delta\mathbf{W}\in
+\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$, containing
+$d_{\mathrm{out}}d_{\mathrm{in}}$ scalar degrees of freedom. Low-Rank
+Adaptation (LoRA) parameterizes the update as
+\begin{equation}
+    \Delta\mathbf{W}
+    =
+    \mathbf{B}\mathbf{A},
+    \qquad
+    \mathbf{B}\in\mathbb{R}^{d_{\mathrm{out}}\times r},
+    \quad
+    \mathbf{A}\in\mathbb{R}^{r\times d_{\mathrm{in}}},
+    \label{eq:peft-lora-factorization}
+\end{equation}
+where $r\ll\min(d_{\mathrm{in}},d_{\mathrm{out}})$. The effective weight is
+\begin{equation}
+    \mathbf{W}
+    =
+    \mathbf{W}_0+\mathbf{B}\mathbf{A}.
+    \label{eq:peft-lora-weight}
+\end{equation}
+The number of trainable parameters is
+\begin{equation}
+    P_{\mathrm{LoRA}}
+    =
+    r(d_{\mathrm{out}}+d_{\mathrm{in}}),
+    \label{eq:peft-lora-parameters}
+\end{equation}
+instead of $d_{\mathrm{out}}d_{\mathrm{in}}$. For a square $d\times d$
+matrix, the ratio is
+\begin{equation}
+    \frac{P_{\mathrm{LoRA}}}{P_{\mathrm{FT}}}
+    =
+    \frac{2dr}{d^2}
+    =
+    \frac{2r}{d}.
+    \label{eq:peft-lora-ratio}
+\end{equation}
+For example, with $d=4096$ and $r=8$, full fine-tuning of this matrix requires
+$4096^2=16\,777\,216$ trainable values, whereas LoRA requires
+$2(4096)(8)=65\,536$, approximately $0.39\%$ as many.
+
+The matrix rank of a product cannot exceed the rank of either factor:
+\begin{equation}
+    \operatorname{rank}(\Delta\mathbf{W})
+    =
+    \operatorname{rank}(\mathbf{B}\mathbf{A})
+    \leq r.
+    \label{eq:peft-lora-rank}
+\end{equation}
+LoRA therefore restricts the update to a low-dimensional matrix subspace.
+This reduces parameter count and can act as an implicit regularizer, but it
+also limits the set of updates that can be represented. The rank $r$ controls
+the capacity-efficiency trade-off. The survey describes an initialization in
+which one factor is initialized to zero so that the initial low-rank update
+is zero, preserving the pretrained transformation at the start of training
+\parencite{prottasha2025peft}.
+
+\paragraph{Dynamic rank and LoRA variants.}
+A fixed rank allocates the same maximum update dimension throughout training.
+Dynamic methods instead adapt rank or rank allocation according to training
+signals or task-specific criteria. The survey discusses DyLoRA, AdaLoRA,
+SLORA, CapaBoost, and AutoLoRA. A schematic representation is
+\begin{equation}
+    r_t=f(\|\nabla_t\|),
+    \qquad t\in\{1,\ldots,T\},
+    \label{eq:peft-dynamic-rank}
+\end{equation}
+where $f$ denotes a rank-allocation rule and $\nabla_t$ denotes gradient
+information at iteration $t$. This equation expresses the general idea of
+adaptive rank selection; it is not a universal update rule shared by every
+dynamic-rank method.
+
+The survey also reviews regularized and task-specific variants, including
+LoRA Dropout, Laplace LoRA, Predict LoRA, LoRA++ and continual-learning
+variants. Quantization can be combined with low-rank adaptation. QLoRA, for
+example, keeps a quantized frozen base model and trains low-rank adaptation
+parameters. SVDQUANT combines singular-value decomposition and quantization.
+Variational LoRA introduces a probabilistic treatment of the adapted weights,
+with the Bayesian relation
+\begin{equation}
+    p(\mathbf{W}\mid\mathcal{D})
+    \propto
+    p(\mathcal{D}\mid\mathbf{W})p(\mathbf{W}),
+    \qquad
+    \mathbf{W}=\mathbf{W}_0+\mathbf{B}\mathbf{A}.
+    \label{eq:peft-variational-lora}
+\end{equation}
+These variants target different limitations, including rank allocation,
+regularization, quantized storage, uncertainty, and continual adaptation
+\parencite{prottasha2025peft}.
+
+\paragraph{Hybrid, unified, and expert-based approaches.}
+Hybrid methods combine adaptation mechanisms. UniPELT, for example, combines
+LoRA, prefix tuning, and adapters within one framework. A general weighted
+combination of $n$ adaptation contributions can be written as
+\begin{equation}
+    \Delta\boldsymbol{\theta}_{\mathrm{hybrid}}
+    =
+    \sum_{i=1}^{n}\alpha_i
+    \Delta\boldsymbol{\theta}_i,
+    \label{eq:peft-hybrid-update}
+\end{equation}
+where $\alpha_i$ controls the contribution of mechanism $i$. Unified
+frameworks seek to coordinate or select among parameter-efficient modules
+rather than committing to one fixed adaptation mechanism.
+
+Mixture-of-experts-based PEFT extends this idea by maintaining several
+specialized adaptation components. If expert $i$ supplies a low-rank update
+$\mathbf{B}_i\mathbf{A}_i$, a routed update can be represented as
+\begin{equation}
+    \Delta\mathbf{W}(x)
+    =
+    \sum_{i=1}^{E}
+    \alpha_i(x)\mathbf{B}_i\mathbf{A}_i,
+    \qquad
+    \sum_{i=1}^{E}\alpha_i(x)=1,
+    \label{eq:peft-moe-lora}
+\end{equation}
+where the routing coefficients depend on the input or token representation.
+Sparse routing can activate only a subset of experts. The survey discusses
+MoE LoRA, MixLoRA, MoLoRA, MOA, and MoLE as examples of expert-based
+adaptation \parencite{prottasha2025peft}.
+
+\subsection{Sparse Matrix Tuning and Comparative Analysis}
+\label{subsec:peft-smt-comparison}
+
+Low-rank methods constrain the rank of the update matrix. Sparse Matrix
+Tuning (SMT), introduced by \textcite{he2025smt}, takes a different approach:
+it selects a small number of submatrices in the original weight matrices and
+updates those blocks directly. The selected blocks need not be low-rank.
+SMT therefore constrains the support of the update, rather than requiring the
+entire update matrix to have low rank.
+
+\paragraph{Task objective and block partitioning.}
+Let $P_{\Phi_0}(y\mid x)$ be a pretrained autoregressive language model with
+parameters $\Phi_0$, and let
+$\mathcal{Z}=\{(x_i,y_i)\}_{i=1}^{N}$ be a downstream dataset. A conditional
+language-modeling objective is
+\begin{equation}
+    \max_{\Theta}
+    \sum_{(x,y)\in\mathcal{Z}}
+    \sum_{t=1}^{|y|}
+    \log
+    P_{\Phi_0+\Delta\Phi(\Theta)}
+    (y_t\mid x,y_{<t}),
+    \label{eq:smt-objective}
+\end{equation}
+where $\Theta$ denotes the trainable adaptation variables. For LoRA,
+$\Theta$ contains low-rank factors. For SMT, $\Theta$ contains the selected
+submatrices.
+
+Consider a pretrained weight matrix
+$\mathbf{W}_0\in\mathbb{R}^{d\times k}$. Partition it into non-overlapping
+blocks of size $l\times l$, assuming for the moment that $l$ divides both
+dimensions. The number of blocks is
+\begin{equation}
+    N_{\mathrm{blocks}}
+    =
+    \frac{d}{l}\frac{k}{l}
+    =
+    \frac{dk}{l^2}.
+    \label{eq:smt-number-blocks}
+\end{equation}
+If $\mathcal{S}$ is the selected set of $m$ blocks, the adapted weight is
+\begin{equation}
+    \mathbf{W}
+    =
+    \mathbf{W}_0+\Delta\mathbf{W}_{\mathcal{S}},
+    \qquad
+    \Delta\mathbf{W}_{\mathcal{S},ij}=0
+    \quad\text{outside }\mathcal{S}.
+    \label{eq:smt-sparse-update}
+\end{equation}
+The number of trainable values in this matrix is
+\begin{equation}
+    P_{\mathrm{SMT}}=ml^2,
+    \qquad
+    m\ll N_{\mathrm{blocks}}.
+    \label{eq:smt-parameter-count}
+\end{equation}
+Within a selected block, the update can be a general $l\times l$ matrix.
+Thus, a selected block can retain full local rank even though only a small
+fraction of the complete matrix is trainable. Figure
+\ref{fig:lora-versus-smt} contrasts the low-rank and submatrix update
+principles.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/lora_vs_smt}
+    \caption{Conceptual comparison of LoRA and Sparse Matrix Tuning. LoRA
+    represents the update as a product of low-rank factors, whereas SMT
+    partitions the original matrix and updates selected blocks. Original
+    schematic based on \textcite{he2025smt}.}
+    \label{fig:lora-versus-smt}
+\end{figure}
+% Alt text for accessibility register: The left panel shows a frozen base
+% matrix combined with two trainable low-rank factors. The right panel shows
+% a matrix divided into blocks, with only selected blocks updated.
+
+\paragraph{Gradient-aware block selection.}
+SMT must identify which blocks are most relevant to the downstream objective.
+The paper compares activation-aware selection with gradient-aware selection.
+In the reported experiments, gradient-aware selection is preferred. During
+a warm-up phase, gradients from the relevant attention linear layers are
+accumulated. Let $\mathbf{G}^{(t)}$ be the weight-gradient matrix at warm-up
+iteration $t$. The accumulated gradient is
+\begin{equation}
+    \mathbf{G}^{\mathrm{acc}}
+    =
+    \sum_{t=1}^{T_w}\mathbf{G}^{(t)},
+    \label{eq:smt-accumulated-gradient}
+\end{equation}
+where $T_w$ is the number of warm-up iterations. For block $B_j$, the score
+used to rank blocks can be represented as
+\begin{equation}
+    s_j
+    =
+    \frac{1}{l^2}
+    \sum_{(a,b)\in B_j}
+    \left|G^{\mathrm{acc}}_{ab}\right|.
+    \label{eq:smt-block-score}
+\end{equation}
+The absolute value prevents positive and negative entries from cancelling
+when the magnitude of accumulated gradient information is assessed. The
+blocks are ranked by $s_j$, and the highest-scoring blocks are retained until
+the specified trainable-parameter budget is reached. The selection budget is
+a method configuration; the exact trainable fraction varies across the
+reported experiments.
+
+The paper reports fewer than 100 warm-up iterations in its experiments. It
+uses 100 warm-up iterations for the commonsense experiments and 25 for the
+Math10K experiments. The block dimension is $256\times256$ in the reported
+LLaMA experiments. This dimension is selected because it is a common factor
+of the row and column dimensions of the relevant LLaMA linear layers, avoiding
+remainder blocks. The authors also report that activation-aware selection
+substantially underperforms gradient-aware selection in their ablation study
+\parencite{he2025smt}.
+
+\paragraph{Partial weight-gradient computation.}
+The computational advantage of SMT depends on changing the backward
+calculation, not merely freezing parameters after a conventional full
+backward pass. Consider a linear layer
+\begin{equation}
+    \mathbf{Z}=\mathbf{W}\mathbf{X},
+    \label{eq:smt-linear-layer}
+\end{equation}
+where $\mathbf{W}\in\mathbb{R}^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$,
+$\mathbf{X}\in\mathbb{R}^{d_{\mathrm{in}}\times n}$, and
+$\mathbf{Z}\in\mathbb{R}^{d_{\mathrm{out}}\times n}$. Define
+$\mathbf{G}=\partial\mathcal{L}/\partial\mathbf{Z}$. The standard matrix
+derivatives are
+\begin{align}
+    \frac{\partial\mathcal{L}}{\partial\mathbf{W}}
+    &=
+    \mathbf{G}\mathbf{X}^{\mathsf T},
+    \label{eq:smt-weight-gradient}\\
+    \frac{\partial\mathcal{L}}{\partial\mathbf{X}}
+    &=
+    \mathbf{W}^{\mathsf T}\mathbf{G}.
+    \label{eq:smt-input-gradient}
+\end{align}
+These derivatives have different roles. The first determines the weight
+update; the second propagates the loss gradient to earlier layers. Freezing
+a weight matrix removes the need to calculate its weight gradient, but the
+input gradient may still be necessary if earlier components are trainable.
+
+For a selected block with row indices $I$ and column indices $J$, the
+required weight gradient is
+\begin{equation}
+    \frac{\partial\mathcal{L}}
+         {\partial\mathbf{W}_{I,J}}
+    =
+    \mathbf{G}_{I,:}\mathbf{X}_{J,:}^{\mathsf T}.
+    \label{eq:smt-selected-block-gradient}
+\end{equation}
+Only the corresponding rows of the output gradient and columns of the
+activation are required for this block's weight-gradient calculation. SMT
+therefore saves selected activation components and computes only the
+selected weight gradients. It does not eliminate every backward operation:
+the activation-gradient calculations that remain necessary for propagation
+through the computational graph are retained.
+
+The implementation replaces selected linear layers with customized sparse
+linear layers. After selection, the chosen blocks are gathered and
+concatenated into a dense tensor of shape $m\times l\times l$. The method
+does not rely on general sparse matrix-matrix multiplication for these
+updates; it uses dense matrix multiplication within the selected blocks.
+This is a hardware-aware choice because irregular sparse indexing can
+introduce overhead, whereas dense matrix multiplication is highly optimized
+on contemporary accelerators. Figure \ref{fig:smt-workflow} summarizes the
+selection and update process.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/smt_workflow}
+    \caption{SMT workflow. A short warm-up phase accumulates gradients,
+    submatrix scores determine the selected blocks, and a customized
+    backward implementation computes and updates only the selected
+    submatrix gradients. The diagram is an original schematic based on
+    \textcite{he2025smt}.}
+    \label{fig:smt-workflow}
+\end{figure}
+% Alt text for accessibility register: A flow diagram connects downstream
+% data and a pretrained model to warm-up gradient accumulation, block
+% scoring, top-block selection, and partial-gradient updates.
+
+\paragraph{Why attention and value projections?}
+The SMT experiments freeze MLP layers and apply their selected updates to
+the query, key, and value projections in attention. The authors compare
+parameter budgets allocated to MLPs and attention. On LLaMA-7B, with a
+reported trainable budget of approximately $0.84\%$, allocating all selected
+parameters to attention produces an average commonsense accuracy of
+$78.7\%$, compared with $76.7\%$ when the same budget is allocated to MLPs.
+Intermediate allocations produce intermediate results in the reported
+ablation \parencite{he2025smt}.
+
+The authors further compare the query, key, and value projections. Their
+reported average accuracies are $73.9\%$ for key-only tuning, $75.3\%$ for
+query-only tuning, $78.5\%$ for value-only tuning, and $78.7\%$ for joint
+query-key-value selection. SMT assigns approximately $95.17\%$ of its
+selected trainable parameters to value projections in the reported
+visualization. These findings are empirical observations for the studied
+LLaMA configurations and downstream benchmarks; they should not be
+generalized into a universal claim that value projections are always the
+most important parameters in every Transformer.
+
+The attention computation helps explain why gradient magnitudes can differ
+among these projections. For scaled dot-product attention,
+\begin{equation}
+    \mathbf{S}
+    =
+    \frac{\mathbf{Q}\mathbf{K}^{\mathsf T}}{\sqrt{d_k}},
+    \qquad
+    \mathbf{P}
+    =
+    \operatorname{softmax}(\mathbf{S}),
+    \qquad
+    \mathbf{O}=\mathbf{P}\mathbf{V}.
+    \label{eq:smt-attention}
+\end{equation}
+For a row of softmax probabilities,
+\begin{equation}
+    \frac{\partial p_i}{\partial s_j}
+    =
+    p_i(\delta_{ij}-p_j).
+    \label{eq:smt-softmax-jacobian}
+\end{equation}
+If one probability approaches one and the others approach zero, the
+corresponding softmax derivatives approach zero. This is softmax saturation.
+The gradient with respect to the value matrix follows directly through the
+weighted aggregation:
+\begin{equation}
+    \frac{\partial\mathcal{L}}{\partial\mathbf{V}}
+    =
+    \mathbf{P}^{\mathsf T}
+    \frac{\partial\mathcal{L}}{\partial\mathbf{O}}.
+    \label{eq:smt-value-gradient}
+\end{equation}
+By contrast, gradients with respect to $\mathbf{Q}$ and $\mathbf{K}$ pass
+through the softmax Jacobian. For one query vector $\mathbf{q}$ and key
+vectors $\mathbf{k}_j$, the score derivative is
+\begin{equation}
+    \frac{\partial s_j}{\partial\mathbf{q}}
+    =
+    \frac{\mathbf{k}_j}{\sqrt{d_k}},
+    \qquad
+    \frac{\partial s_j}{\partial\mathbf{k}_j}
+    =
+    \frac{\mathbf{q}}{\sqrt{d_k}}.
+    \label{eq:smt-qk-score-derivative}
+\end{equation}
+Consequently, saturation can attenuate the gradients reaching query and key
+projections. This provides a mechanism consistent with the gradient
+differences reported by the SMT authors, although the exact magnitude also
+depends on the data, model state, and attention distribution. The scaling
+factor $1/\sqrt{d_k}$ controls score variance under the usual independent,
+zero-mean component assumptions. If the query and key components have
+variances $\sigma_Q^2$ and $\sigma_K^2$, respectively, then
+\begin{equation}
+    \operatorname{Var}(\mathbf{q}^{\mathsf T}\mathbf{k})
+    =
+    d_k\sigma_Q^2\sigma_K^2,
+    \qquad
+    \operatorname{Var}
+    \left(
+        \frac{\mathbf{q}^{\mathsf T}\mathbf{k}}{\sqrt{d_k}}
+    \right)
+    =
+    \sigma_Q^2\sigma_K^2.
+    \label{eq:smt-attention-variance}
+\end{equation}
+The scaling controls the growth of score variance with $d_k$, but does not
+guarantee that attention probabilities cannot become saturated.
+
+\paragraph{Reported performance and system efficiency.}
+The commonsense results reported by \textcite{he2025smt} show that SMT can
+approach full fine-tuning while updating a small fraction of parameters.
+For LLaMA-7B, the reported average accuracy is $81.4\%$ for full fine-tuning.
+At approximately $0.84\%$ trainable parameters, SMT obtains $78.7\%$,
+compared with $76.3\%$ for LoRA, $78.4\%$ for DoRA, and $76.5\%$ for SpIEL.
+With a larger SMT budget of approximately $4.91\%$, the reported average
+reaches $81.4\%$. These figures are benchmark-specific and should be read
+together with the stated model, dataset, and hyperparameter configuration.
+
+\begin{table}[htbp]
+    \centering
+    \caption{LLaMA-7B average accuracy on the commonsense reasoning
+    benchmark reported by \textcite{he2025smt}. The trainable-parameter
+    percentages and accuracy values are reproduced from the paper's
+    comparison table.}
+    \label{tab:smt-commonsense-results}
+    \begin{tabularx}{\textwidth}{lcc}
+        \toprule
+        Method & Trainable parameters (\%) & Average accuracy (\%) \\
+        \midrule
+        Full fine-tuning & 100.00 & 81.4 \\
+        LoRA & 0.83 & 76.3 \\
+        DoRA & 0.84 & 78.4 \\
+        SpIEL & 0.84 & 76.5 \\
+        SMT & 0.84 & 78.7 \\
+        SMT (larger budget) & 4.91 & 81.4 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+For the LLaMA-7B timing comparison, the paper reports experiments on four
+NVIDIA A100 40 GB GPUs. Under that configuration, full fine-tuning takes
+$243.84$ seconds, while SMT with a $1.26\%$ trainable-parameter budget takes
+$16.68$ seconds, corresponding to a reported $14.6\times$ speedup. LoRA,
+DoRA, and SpIEL take $17.82$, $18.04$, and $25.45$ seconds, respectively,
+under the reported comparison settings. These wall-clock values are
+configuration-specific, not universal speedup guarantees. The paper also
+reports a $67\%$ reduction in GPU memory footprint relative to full
+fine-tuning and a $99.5\%$ reduction in optimizer memory under its stated
+analysis \parencite{he2025smt}.
+
+\paragraph{Complexity comparison.}
+The parameter count is only one part of the cost of an adaptation method.
+A useful comparison distinguishes trainable parameters, additional
+parameters, forward-pass overhead, backward-pass work, and the storage
+required by optimizer state. Table \ref{tab:peft-complexity} summarizes
+representative parameter-count scalings. These expressions are schematic:
+the exact count depends on how many layers and matrices are adapted, whether
+biases are included, and the implementation details.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Representative trainable-parameter scalings for PEFT methods.
+    Here $P$ is the base-model parameter count, $L$ is the number of adapted
+    layers, $d$ is the hidden dimension, $d_b$ is the adapter bottleneck,
+    $m$ is the prompt length, and $r$ is the LoRA rank.}
+    \label{tab:peft-complexity}
+    \begin{tabularx}{\textwidth}{lXX}
+        \toprule
+        Method & Approximate trainable parameters & Principal restriction \\
+        \midrule
+        Full fine-tuning & $P$ & No restriction on the update \\
+        Serial adapters & $2Ldd_b$ & Bottleneck transformations \\
+        Soft prompt tuning & $md$ & Input-level prompt vectors \\
+        Prefix tuning & $\mathcal{O}(Lmd)$ & Layer-wise attention prefixes \\
+        LoRA & $r(d_{\mathrm{in}}+d_{\mathrm{out}})$ per matrix & Low-rank update \\
+        Selective tuning & $q\ll P$ & Selected original parameters \\
+        SMT & $ml^2$ per matrix & Selected full-rank blocks \\
+        Propulsion & $\mathcal{O}(d)$ & Feature-wise scaling \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+For LoRA and adapters, additional trainable modules are introduced and
+executed in the forward path unless they are merged or otherwise transformed
+for inference. Selective tuning and SMT update selected portions of the
+original parameters. Prompt methods add trainable representations and may
+increase the effective sequence length. Quantization-based methods address
+the numerical precision and storage of the frozen base model, which is a
+different axis of efficiency from reducing the number of trainable
+parameters. The survey's complexity discussion distinguishes total
+trainable parameters from additional parameters and emphasizes that
+parameter count alone does not capture all deployment costs
+\parencite{prottasha2025peft}.
+
+\subsection{Limitations, Research Directions, and Connection to Scaling}
+\label{subsec:peft-limitations-outlook}
+
+PEFT trades unrestricted adaptation capacity for a smaller optimization
+problem. This trade-off can improve efficiency and may reduce estimation
+variance on low-resource tasks, but a restrictive parameterization can
+increase approximation error when the downstream task requires substantial
+changes to the pretrained representation. The survey notes that PEFT can
+underperform when a task demands significant adaptation or differs sharply
+from the pretraining application. Adapter dimensions, prompt lengths, rank
+values, layer placements, and selection thresholds can also be sensitive
+hyperparameters \parencite{prottasha2025peft}.
+
+The statistical trade-off can be expressed conceptually as a balance between
+approximation error and estimation error. A highly flexible full fine-tuning
+procedure can represent a broad set of task-specific changes, but estimating
+a large number of parameters from limited data can increase variance. A
+constrained PEFT method reduces the dimension of the adaptation problem, but
+may not contain an update that adequately represents the target task. The
+best method is therefore not necessarily the one with the fewest trainable
+parameters. It is the method that meets the task's performance requirement
+within the available compute, memory, storage, and latency budgets.
+
+Several research questions follow from this perspective. A theoretical
+account of parameter influence could connect the mutual information between
+adaptation modules and predictions with the curvature of the loss landscape.
+For example, the Hessian
+\begin{equation}
+    \mathbf{H}
+    =
+    \nabla_{\boldsymbol{\theta}}^2
+    \mathcal{L}_{\mathrm{task}}
+    \label{eq:peft-hessian}
+\end{equation}
+describes local second-order curvature. Studying how low-dimensional
+adaptation subspaces align with sensitive directions of this curvature could
+help explain why some small updates are effective. The survey identifies
+theoretical understanding of parameter influence as an open research
+direction, rather than presenting a completed general theory
+\parencite{prottasha2025peft}.
+
+Layer-wise sensitivity is another open problem. If $q_l$ parameters are
+assigned to layer $l$, a simplified allocation problem is
+\begin{equation}
+    \max_{\{q_l\}_{l=1}^{L}}
+    \sum_{l=1}^{L}\Delta\mathcal{P}_l(q_l)
+    \quad
+    \text{subject to}
+    \quad
+    \sum_{l=1}^{L}q_l\leq Q,
+    \label{eq:peft-layer-allocation}
+\end{equation}
+where $\Delta\mathcal{P}_l(q_l)$ denotes the performance contribution
+associated with the parameter budget assigned to layer $l$, and $Q$ is the
+total budget. This formulation makes explicit why uniform allocation need
+not be optimal. Jacobian analysis and Fisher-information estimates are
+possible tools for identifying sensitive layers. SMT provides one empirical
+example of nonuniform allocation by selecting blocks according to their
+gradient scores \parencite{prottasha2025peft,he2025smt}.
+
+Task-aware and domain-specific adaptation also remains important. Legal,
+medical, mathematical, and multilingual tasks can impose different
+representational requirements. Future PEFT designs may use structure-aware
+prompts, hierarchical adapters, or task-conditioned reparameterization.
+Multimodal and non-Transformer architectures introduce further challenges:
+an adaptation must preserve alignment between modalities while modifying
+only selected components. The survey identifies vision-language, speech,
+video, graph, and recurrent architectures as areas in which PEFT principles
+can be developed beyond conventional text-only Transformers
+\parencite{prottasha2025peft}.
+
+Continual learning requires a model to acquire new tasks without losing
+previous capabilities. Dynamically growing adapter banks, adapter
+composition, sparse adapter stacking, and delta compression are possible
+directions, but they introduce decisions about module selection, interference,
+and storage. Interpretability is also unresolved: a small adapter or prompt
+is not automatically understandable. Attribution methods and activation
+visualization are needed to explain how task-specific modules affect model
+predictions.
+
+Privacy-preserving and federated PEFT may reduce communication by exchanging
+small adaptation updates rather than complete model copies. However,
+parameter efficiency alone does not provide a privacy guarantee; adaptation
+parameters can still reveal information about training examples. Differential
+privacy and secure aggregation must be treated as additional mechanisms.
+Standardized benchmarks are likewise necessary so that methods are compared
+under consistent models, datasets, trainable budgets, hardware, latency, and
+memory measurements. Hardware-aware and energy-aware design is essential
+because mathematical sparsity or a reduced parameter count does not
+automatically translate into faster execution. Finally, meta-PEFT aims to
+learn how to select adapter placements, prompt structures, rank values, or
+other adaptation configurations across tasks, reducing manual
+hyperparameter search \parencite{prottasha2025peft}.
+
+The role of PEFT in the optimization narrative is now clear. Pretraining
+constructs a reusable parameterized model; full fine-tuning adapts that model
+by optimizing its complete parameter vector; and PEFT restricts or
+reparameterizes the task-specific update to reduce the cost of adaptation.
+The different methods make distinct compromises between flexibility,
+regularization, modularity, optimizer memory, and hardware efficiency.
+SMT illustrates that the organization of the selected parameters and the
+implementation of their gradients can matter as much as the abstract
+parameter count.
+
+This completes the discussion of optimization-side adaptation mechanisms.
+The next stage of the book moves from the question of how a model is
+optimized or adapted to the broader question of how model performance,
+data, and computational resources relate as model scale changes. That
+question leads naturally to the study of scaling laws.

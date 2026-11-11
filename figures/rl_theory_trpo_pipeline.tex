@@ -1,0 +1,15 @@
+% Native LaTeX picture: sample estimation and trust-region numerical update.
+\setlength{\unitlength}{1mm}
+\begin{picture}(160,55)
+    \put(2,34){\framebox(38,14){\shortstack{Old policy\\$\pi_{\theta_{\rm old}}$}}}
+    \put(61,34){\framebox(38,14){\shortstack{Sample trajectories\\and estimate $A$}}}
+    \put(120,34){\framebox(38,14){\shortstack{Surrogate gradient\\$g=\nabla_\theta L$}}}
+    \put(40,41){\vector(1,0){21}}
+    \put(99,41){\vector(1,0){21}}
+    \put(120,6){\framebox(38,14){\shortstack{Line search\\accept / reject}}}
+    \put(61,6){\framebox(38,14){\shortstack{Conjugate gradients\\solve $Fs=g$}}}
+    \put(2,6){\framebox(38,14){\shortstack{KL constraint\\$D_{\rm KL}\leq\delta$}}}
+    \put(139,34){\vector(0,-1){14}}
+    \put(120,13){\vector(-1,0){21}}
+    \put(61,13){\vector(-1,0){21}}
+\end{picture}

@@ -1,0 +1,13 @@
+% Native LaTeX picture: value estimate -> approximate greedy policy -> evaluation.
+\setlength{\unitlength}{1mm}
+\begin{picture}(155,55)
+    \put(3,35){\framebox(34,13){\shortstack{Value estimate\\$v_k$}}}
+    \put(49,35){\framebox(46,13){\shortstack{Approximate greedy\\$G_{\varepsilon}$}}}
+    \put(108,35){\framebox(40,13){\shortstack{New policy\\$\pi_{k+1}$}}}
+    \put(94,5){\framebox(54,13){\shortstack{Policy evaluation\\$(T_{\pi_{k+1}})^m$}}}
+    \put(37,41){\vector(1,0){12}}
+    \put(95,41){\vector(1,0){13}}
+    \put(128,35){\vector(0,-1){17}}
+    \put(94,11){\vector(-1,0){53}}
+    \put(51,14){\makebox(37,4){updated value $v_{k+1}$}}
+\end{picture}

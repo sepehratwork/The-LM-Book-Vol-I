@@ -1,0 +1,16 @@
+% Native LaTeX picture: parameterization, path distribution, and metric update.
+\setlength{\unitlength}{1mm}
+\begin{picture}(160,58)
+    \put(2,38){\framebox(36,13){\shortstack{Parameters\\$\theta\in\mathbb{R}^d$}}}
+    \put(62,38){\framebox(36,13){\shortstack{Policy\\$\pi_\theta(a\mid s)$}}}
+    \put(122,38){\framebox(36,13){\shortstack{Path distribution\\$p_\theta(\tau)$}}}
+    \put(38,44){\vector(1,0){24}}
+    \put(98,44){\vector(1,0){24}}
+    \put(122,15){\framebox(36,13){\shortstack{Fisher metric\\$F(\theta)$}}}
+    \put(62,15){\framebox(36,13){\shortstack{Natural direction\\$F^{-1}g$}}}
+    \put(2,15){\framebox(36,13){\shortstack{Trust region\\$D_{\rm KL}\leq\delta$}}}
+    \put(140,38){\vector(0,-1){10}}
+    \put(122,21){\vector(-1,0){24}}
+    \put(62,21){\vector(-1,0){24}}
+    \put(43,7){\makebox(75,5){local probability geometry controls the update}}
+\end{picture}

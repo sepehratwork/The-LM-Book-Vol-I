@@ -1,0 +1,14 @@
+% Built-in LaTeX picture-environment figure fragment; no TikZ dependency.
+\begingroup
+\setlength{\unitlength}{0.8mm}
+\begin{picture}(150,58)
+    \put(4,39){\framebox(34,13){\shortstack{Model size\\\(N\)}}}
+    \put(4,10){\framebox(34,13){\shortstack{Processed tokens\\\(D\)}}}
+    \put(58,25){\framebox(42,17){\shortstack{Training compute\\\(C\approx 6ND\)}}}
+    \put(112,25){\framebox(34,17){\shortstack{Predictive loss\\\(L(N,D)\)}}}
+    \put(38,45){\vector(1,0){20}}
+    \put(38,16){\vector(1,1){20}}
+    \put(100,33){\vector(1,0){12}}
+    \put(5,2){\makebox(94,5)[l]{Dense-model approximation; architecture and data quality also matter.}}
+\end{picture}
+\endgroup

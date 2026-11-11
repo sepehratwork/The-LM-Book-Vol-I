@@ -1,0 +1,12 @@
+% Native LaTeX picture: no external graphics package is required.
+\setlength{\unitlength}{1mm}
+\begin{picture}(150,48)
+    \put(8,22){\framebox(48,18){\shortstack{Agent\\policy $\pi_\theta(a\mid s)$}}}
+    \put(94,22){\framebox(48,18){\shortstack{Environment\\$P(s'\mid s,a),\ r(s,a)$}}}
+    \put(56,34){\vector(1,0){38}}
+    \put(61,38){\makebox(30,4){action $a_t$}}
+    \put(94,27){\vector(-1,0){38}}
+    \put(61,17){\makebox(32,4){$s_{t+1},\ r_t$}}
+    \put(8,9){\makebox(48,5){observation $s_t$}}
+    \put(94,9){\makebox(48,5){transition and reward}}
+\end{picture}

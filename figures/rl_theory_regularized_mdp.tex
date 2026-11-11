@@ -1,0 +1,14 @@
+% Native LaTeX picture: regularized greedy map and proximal update.
+\setlength{\unitlength}{1mm}
+\begin{picture}(160,58)
+    \put(2,38){\framebox(40,13){\shortstack{Action values\\$q_v(s,\cdot)$}}}
+    \put(60,38){\framebox(40,13){\shortstack{Convex conjugate\\$\Omega^*(q)$}}}
+    \put(118,38){\framebox(40,13){\shortstack{Regularized policy\\$\nabla\Omega^*(q)$}}}
+    \put(42,44){\vector(1,0){18}}
+    \put(100,44){\vector(1,0){18}}
+    \put(2,8){\framebox(40,13){\shortstack{Previous policy\\$\pi_k$}}}
+    \put(60,8){\framebox(40,13){\shortstack{Bregman divergence\\$D_\Omega(\pi\|\pi_k)$}}}
+    \put(118,8){\framebox(40,13){\shortstack{Proximal update\\$\arg\max_\pi\{\langle q,\pi\rangle-D\}$}}}
+    \put(42,14){\vector(1,0){18}}
+    \put(100,14){\vector(1,0){18}}
+\end{picture}

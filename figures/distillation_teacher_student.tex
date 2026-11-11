@@ -1,0 +1,21 @@
+% Output-level teacher--student distillation diagram.
+% Uses the standard LaTeX picture environment; no additional package is needed.
+\begingroup
+\setlength{\unitlength}{0.75mm}
+\begin{picture}(150,62)
+    \put(1,39){\framebox(25,12){\shortstack{Input\\context}}}
+    \put(37,47){\framebox(30,12){Teacher}}
+    \put(37,20){\framebox(30,12){Student}}
+    \put(80,47){\framebox(28,12){\shortstack{Teacher\\distribution}}}
+    \put(80,20){\framebox(28,12){\shortstack{Student\\distribution}}}
+    \put(120,33){\framebox(27,12){\shortstack{Distillation\\objective}}}
+    \put(26,45){\vector(1,1){10}}
+    \put(26,45){\vector(1,-2){10}}
+    \put(67,53){\vector(1,0){13}}
+    \put(67,26){\vector(1,0){13}}
+    \put(108,53){\vector(1,-1){11}}
+    \put(108,26){\vector(1,1){11}}
+    \put(2,8){\makebox(105,5)[l]{\scriptsize The teacher and student receive the same context.}}
+    \put(2,2){\makebox(145,5)[l]{\scriptsize The loss compares predictive distributions; student parameters receive the update.}}
+\end{picture}
+\endgroup

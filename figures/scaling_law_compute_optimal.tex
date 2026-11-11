@@ -1,0 +1,23 @@
+% Schematic loss contributions under a fixed-compute constraint.
+\begingroup
+\setlength{\unitlength}{0.8mm}
+\begin{picture}(116,72)
+    \put(12,9){\vector(1,0){94}}
+    \put(12,9){\vector(0,1){57}}
+    \put(108,5){\makebox(0,0)[l]{\(N\)}}
+    \put(7,68){\makebox(0,0)[b]{Loss}}
+    % Model-capacity contribution: decreasing with N.
+    \thinlines
+    \qbezier(16,58)(34,22)(99,14)
+    \put(77,21){\makebox(0,0)[l]{\(AN^{-\alpha}\)}}
+    % Data-limitation contribution: increasing with N at fixed compute.
+    \qbezier(16,13)(55,17)(99,57)
+    \put(72,53){\makebox(0,0)[l]{\(B(C/6)^{-\beta}N^\beta\)}}
+    % Sum: schematic U-shaped objective.
+    \thicklines
+    \qbezier(16,62)(46,4)(99,60)
+    \put(51,8){\makebox(0,0)[t]{\(\displaystyle L_C(N)\)}}
+    \put(55,2){\circle*{2.2}}
+    \put(55,0){\makebox(0,0)[t]{\(\,N^*\,\)}}
+\end{picture}
+\endgroup

@@ -41,35 +41,254 @@
 \contentsline {subsection}{\numberline {2.3.8}Expert Structure, Specialization, and Practical Constraints}{38}{subsection.2.3.8}%
 \contentsline {subsection}{\numberline {2.3.9}Limitations and Connection to Activation Functions}{39}{subsection.2.3.9}%
 \contentsline {section}{\numberline {2.4}Activation Functions}{39}{section.2.4}%
-\contentsline {section}{\numberline {2.5}Normalization}{39}{section.2.5}%
-\contentsline {section}{\numberline {2.6}Attention Mechanisms}{39}{section.2.6}%
-\contentsline {part}{II\hspace {1em}Optimization and Scaling}{40}{part.2}%
-\contentsline {chapter}{\numberline {3}Optimization}{41}{chapter.3}%
-\contentsline {section}{\numberline {3.1}Optimization Algorithms}{41}{section.3.1}%
-\contentsline {section}{\numberline {3.2}Loss Functions}{41}{section.3.2}%
-\contentsline {section}{\numberline {3.3}Quantization}{41}{section.3.3}%
-\contentsline {section}{\numberline {3.4}Knowledge Distillation}{41}{section.3.4}%
-\contentsline {section}{\numberline {3.5}Parameter-Efficient Fine-Tuning}{41}{section.3.5}%
-\contentsline {chapter}{\numberline {4}Scaling Laws}{42}{chapter.4}%
-\contentsline {part}{III\hspace {1em}Reinforcement Learning and Neuroscience}{43}{part.3}%
-\contentsline {chapter}{\numberline {5}Reinforcement Learning}{44}{chapter.5}%
-\contentsline {section}{\numberline {5.1}Theoretical Foundations}{44}{section.5.1}%
-\contentsline {section}{\numberline {5.2}Actor--Critic Methods}{44}{section.5.2}%
-\contentsline {section}{\numberline {5.3}Reinforcement Learning with Verifiable Rewards}{44}{section.5.3}%
-\contentsline {section}{\numberline {5.4}Group Relative Policy Optimization for Verifiable Rewards}{44}{section.5.4}%
-\contentsline {chapter}{\numberline {6}Neuroscience and Cognitive Foundations}{45}{chapter.6}%
-\contentsline {section}{\numberline {6.1}Introduction}{45}{section.6.1}%
-\contentsline {section}{\numberline {6.2}From System 1 to System 2}{45}{section.6.2}%
-\contentsline {part}{IV\hspace {1em}Data and Training}{46}{part.4}%
-\contentsline {chapter}{\numberline {7}Training Data}{47}{chapter.7}%
-\contentsline {section}{\numberline {7.1}Pre-Training Data}{47}{section.7.1}%
-\contentsline {section}{\numberline {7.2}Post-Training Data}{47}{section.7.2}%
-\contentsline {chapter}{\numberline {8}Training Methods}{48}{chapter.8}%
-\contentsline {section}{\numberline {8.1}Pre-Training}{48}{section.8.1}%
-\contentsline {section}{\numberline {8.2}Post-Training}{48}{section.8.2}%
-\contentsline {section}{\numberline {8.3}Machine Unlearning}{48}{section.8.3}%
-\contentsline {part}{V\hspace {1em}Evaluation, Impact, Philosophy, and Challenges}{49}{part.5}%
-\contentsline {chapter}{\numberline {9}Evaluation}{50}{chapter.9}%
-\contentsline {chapter}{\numberline {10}Environmental Impacts}{51}{chapter.10}%
-\contentsline {chapter}{\numberline {11}Philosophy}{52}{chapter.11}%
-\contentsline {chapter}{\numberline {12}Challenges}{53}{chapter.12}%
+\contentsline {subsection}{\numberline {2.4.1}Why nonlinear transformations are indispensable}{40}{subsection.2.4.1}%
+\contentsline {subsection}{\numberline {2.4.2}Differentiability and gradient propagation}{41}{subsection.2.4.2}%
+\contentsline {subsection}{\numberline {2.4.3}Classical and smooth activation functions}{42}{subsection.2.4.3}%
+\contentsline {subsection}{\numberline {2.4.4}Gated activation functions}{44}{subsection.2.4.4}%
+\contentsline {subsection}{\numberline {2.4.5}Learnable rational activation functions}{45}{subsection.2.4.5}%
+\contentsline {subsection}{\numberline {2.4.6}Polynomial composition activation functions}{48}{subsection.2.4.6}%
+\contentsline {paragraph}{PolyReLU.}{49}{section*.16}%
+\contentsline {paragraph}{PolyNorm.}{49}{section*.17}%
+\contentsline {subsection}{\numberline {2.4.7}Approximation theory and effective dimensionality}{50}{subsection.2.4.7}%
+\contentsline {subsection}{\numberline {2.4.8}Empirical performance and computational cost}{52}{subsection.2.4.8}%
+\contentsline {subsection}{\numberline {2.4.9}Limitations and connection to normalization}{53}{subsection.2.4.9}%
+\contentsline {section}{\numberline {2.5}Normalization}{54}{section.2.5}%
+\contentsline {subsection}{\numberline {2.5.1}Architectural motivation and statistical foundations}{54}{subsection.2.5.1}%
+\contentsline {subsection}{\numberline {2.5.2}Layer Normalization: formulation and geometry}{56}{subsection.2.5.2}%
+\contentsline {paragraph}{Geometric interpretation.}{57}{section*.18}%
+\contentsline {paragraph}{Differential behavior.}{58}{section*.19}%
+\contentsline {subsection}{\numberline {2.5.3}RMSNorm and normalization within residual Transformer blocks}{58}{subsection.2.5.3}%
+\contentsline {paragraph}{Geometric interpretation and Jacobian.}{59}{section*.20}%
+\contentsline {paragraph}{Residual connections.}{59}{section*.21}%
+\contentsline {subsection}{\numberline {2.5.4}Observed input-output behavior of trained normalization layers}{60}{subsection.2.5.4}%
+\contentsline {subsection}{\numberline {2.5.5}Dynamic Tanh: formulation, derivatives, and implementation}{62}{subsection.2.5.5}%
+\contentsline {paragraph}{Local behavior and saturation.}{63}{section*.22}%
+\contentsline {paragraph}{Implementation and initialization.}{63}{section*.23}%
+\contentsline {subsection}{\numberline {2.5.6}Computational analysis and a worked numerical example}{64}{subsection.2.5.6}%
+\contentsline {subsection}{\numberline {2.5.7}Language-model evaluation and initialization}{65}{subsection.2.5.7}%
+\contentsline {paragraph}{The role of the initial value of \(\alpha \).}{66}{section*.24}%
+\contentsline {paragraph}{Ablation of the squashing function and the learnable scale.}{67}{section*.25}%
+\contentsline {subsection}{\numberline {2.5.8}Normalization choices in Small Language Models}{67}{subsection.2.5.8}%
+\contentsline {subsection}{\numberline {2.5.9}Limitations and connection to the attention mechanism}{68}{subsection.2.5.9}%
+\contentsline {section}{\numberline {2.6}Attention Mechanisms}{69}{section.2.6}%
+\contentsline {subsection}{\numberline {2.6.1}The role of attention in sequence representation}{69}{subsection.2.6.1}%
+\contentsline {subsection}{\numberline {2.6.2}Query, key, and value representations}{70}{subsection.2.6.2}%
+\contentsline {subsection}{\numberline {2.6.3}Scaled dot-product attention}{71}{subsection.2.6.3}%
+\contentsline {paragraph}{Compatibility scores.}{71}{section*.26}%
+\contentsline {paragraph}{Why the scores are scaled.}{71}{section*.27}%
+\contentsline {paragraph}{Softmax normalization.}{72}{section*.28}%
+\contentsline {paragraph}{Weighted aggregation of values.}{73}{section*.29}%
+\contentsline {subsection}{\numberline {2.6.4}Self-attention, cross-attention, and causal masking}{73}{subsection.2.6.4}%
+\contentsline {paragraph}{Self-attention.}{73}{section*.30}%
+\contentsline {paragraph}{Cross-attention.}{73}{section*.31}%
+\contentsline {paragraph}{Causal masking.}{74}{section*.32}%
+\contentsline {subsection}{\numberline {2.6.5}Multi-head attention}{74}{subsection.2.6.5}%
+\contentsline {paragraph}{Parameter count.}{75}{section*.33}%
+\contentsline {paragraph}{Arithmetic cost.}{76}{section*.34}%
+\contentsline {subsection}{\numberline {2.6.6}Backpropagation through attention}{76}{subsection.2.6.6}%
+\contentsline {subsection}{\numberline {2.6.7}Attention-head interpretation and functional specialization}{78}{subsection.2.6.7}%
+\contentsline {paragraph}{The QK and OV transformations.}{78}{section*.35}%
+\contentsline {paragraph}{Residual-stream contribution.}{78}{section*.36}%
+\contentsline {paragraph}{Knowledge Recalling.}{79}{section*.37}%
+\contentsline {paragraph}{In-Context Identification.}{79}{section*.38}%
+\contentsline {paragraph}{Latent Reasoning.}{79}{section*.39}%
+\contentsline {paragraph}{Expression Preparation.}{79}{section*.40}%
+\contentsline {paragraph}{Experimental investigation.}{80}{section*.41}%
+\contentsline {subsection}{\numberline {2.6.8}Computational and memory complexity of dense attention}{81}{subsection.2.6.8}%
+\contentsline {paragraph}{Intermediate memory.}{81}{section*.42}%
+\contentsline {paragraph}{The key--value cache during autoregressive inference.}{81}{section*.43}%
+\contentsline {subsection}{\numberline {2.6.9}Multi-query and grouped-query attention}{82}{subsection.2.6.9}%
+\contentsline {paragraph}{Multi-query attention.}{82}{section*.44}%
+\contentsline {paragraph}{Grouped-query attention.}{82}{section*.45}%
+\contentsline {paragraph}{Converting and uptraining existing checkpoints.}{83}{section*.46}%
+\contentsline {subsection}{\numberline {2.6.10}FlashAttention and FlashAttention-2}{84}{subsection.2.6.10}%
+\contentsline {paragraph}{Memory hierarchy and the I/O bottleneck.}{84}{section*.47}%
+\contentsline {paragraph}{Tiling.}{84}{section*.48}%
+\contentsline {paragraph}{Online softmax derivation.}{85}{section*.49}%
+\contentsline {paragraph}{Backward pass and recomputation.}{85}{section*.50}%
+\contentsline {paragraph}{FlashAttention-2 and GPU work partitioning.}{86}{section*.51}%
+\contentsline {subsection}{\numberline {2.6.11}Linear attention}{87}{subsection.2.6.11}%
+\contentsline {paragraph}{Kernelized reformulation.}{87}{section*.52}%
+\contentsline {paragraph}{Feature-map choices and approximation.}{88}{section*.53}%
+\contentsline {paragraph}{Recurrent state formulation.}{89}{section*.54}%
+\contentsline {paragraph}{Forgetting mechanisms.}{89}{section*.55}%
+\contentsline {paragraph}{Linear attention as an in-context memory.}{90}{section*.56}%
+\contentsline {subsection}{\numberline {2.6.12}Sparse attention}{90}{subsection.2.6.12}%
+\contentsline {paragraph}{Sparse interaction sets.}{90}{section*.57}%
+\contentsline {paragraph}{Fixed-pattern sparse attention.}{91}{section*.58}%
+\contentsline {paragraph}{Block-sparse attention.}{91}{section*.59}%
+\contentsline {paragraph}{Clustering and retrieval-based attention.}{91}{section*.60}%
+\contentsline {paragraph}{Sparsity and hardware alignment.}{92}{section*.61}%
+\contentsline {subsection}{\numberline {2.6.13}Hybrid attention architectures}{92}{subsection.2.6.13}%
+\contentsline {subsection}{\numberline {2.6.14}Limitations and connection to the next topic}{93}{subsection.2.6.14}%
+\contentsline {part}{II\hspace {1em}Optimization and Scaling}{95}{part.2}%
+\contentsline {chapter}{\numberline {3}Optimization}{96}{chapter.3}%
+\contentsline {section}{\numberline {3.1}Optimization Algorithms}{96}{section.3.1}%
+\contentsline {subsection}{\numberline {3.1.1}Optimization as a Statistical Learning Problem}{96}{subsection.3.1.1}%
+\contentsline {subsection}{\numberline {3.1.2}Stochastic and Batch Gradient Methods}{98}{subsection.3.1.2}%
+\contentsline {paragraph}{Noise-reduction methods.}{100}{section*.62}%
+\contentsline {subsection}{\numberline {3.1.3}First-Order and Adaptive Optimization Algorithms}{101}{subsection.3.1.3}%
+\contentsline {paragraph}{Stochastic gradient descent and momentum.}{101}{section*.63}%
+\contentsline {paragraph}{Adaptive diagonal preconditioning.}{102}{section*.64}%
+\contentsline {paragraph}{Adam.}{102}{section*.65}%
+\contentsline {paragraph}{AdamW and decoupled weight decay.}{103}{section*.66}%
+\contentsline {subsection}{\numberline {3.1.4}Memory-Efficient and Alternative Update Rules}{103}{subsection.3.1.4}%
+\contentsline {paragraph}{Adafactor and factored second moments.}{104}{section*.67}%
+\contentsline {paragraph}{Low-precision and grouped optimizer states.}{104}{section*.68}%
+\contentsline {paragraph}{Lion and sign-based updates.}{104}{section*.69}%
+\contentsline {paragraph}{Large-batch optimization.}{105}{section*.70}%
+\contentsline {subsection}{\numberline {3.1.5}Curvature-Aware and Second-Order Optimization}{105}{subsection.3.1.5}%
+\contentsline {paragraph}{Quasi-Newton and Hessian-free methods.}{106}{section*.71}%
+\contentsline {paragraph}{Curvature estimation in language-model optimizers.}{106}{section*.72}%
+\contentsline {subsection}{\numberline {3.1.6}Structured Matrix and Tensor Preconditioning: Shampoo}{106}{subsection.3.1.6}%
+\contentsline {subsection}{\numberline {3.1.7}SOAP: Adam in the Shampoo Eigenbasis}{109}{subsection.3.1.7}%
+\contentsline {subsection}{\numberline {3.1.8}Low-Rank and Matrix-Orthogonalized Optimizers}{110}{subsection.3.1.8}%
+\contentsline {paragraph}{GaLore and low-rank projection.}{110}{section*.73}%
+\contentsline {paragraph}{Muon and matrix orthogonalization.}{111}{section*.74}%
+\contentsline {subsection}{\numberline {3.1.9}Systems Constraints and Numerical Implementation}{111}{subsection.3.1.9}%
+\contentsline {paragraph}{Optimizer-state memory.}{112}{section*.75}%
+\contentsline {paragraph}{Mixed precision and numerical stability.}{112}{section*.76}%
+\contentsline {paragraph}{Distributed optimization and communication.}{112}{section*.77}%
+\contentsline {subsection}{\numberline {3.1.10}Empirical Evaluation and Optimizer Selection}{112}{subsection.3.1.10}%
+\contentsline {subsection}{\numberline {3.1.11}Limitations and Connection to the Next Topic}{115}{subsection.3.1.11}%
+\contentsline {section}{\numberline {3.2}Loss Functions}{115}{section.3.2}%
+\contentsline {section}{\numberline {3.3}Quantization}{115}{section.3.3}%
+\contentsline {subsection}{\numberline {3.3.1}Numerical representation and the need for quantization}{116}{subsection.3.3.1}%
+\contentsline {subsection}{\numberline {3.3.2}Uniform affine quantization}{117}{subsection.3.3.2}%
+\contentsline {paragraph}{Symmetric quantization.}{118}{section*.78}%
+\contentsline {paragraph}{Asymmetric quantization.}{119}{section*.79}%
+\contentsline {paragraph}{Quantization granularity.}{119}{section*.80}%
+\contentsline {subsection}{\numberline {3.3.3}Quantization error and its propagation through neural networks}{120}{subsection.3.3.3}%
+\contentsline {subsection}{\numberline {3.3.4}Quantization as part of the optimization process}{121}{subsection.3.3.4}%
+\contentsline {paragraph}{Post-training quantization.}{121}{section*.81}%
+\contentsline {paragraph}{Quantization-aware training.}{121}{section*.82}%
+\contentsline {paragraph}{The straight-through estimator.}{123}{section*.83}%
+\contentsline {paragraph}{Learning the quantization step size.}{123}{section*.84}%
+\contentsline {paragraph}{Quantization oscillation and optimization stability.}{124}{section*.85}%
+\contentsline {subsection}{\numberline {3.3.5}Quantization targets and the lifecycle of a language model}{124}{subsection.3.3.5}%
+\contentsline {paragraph}{Weight quantization.}{124}{section*.86}%
+\contentsline {paragraph}{Activation quantization.}{125}{section*.87}%
+\contentsline {paragraph}{Joint weight--activation quantization.}{126}{section*.88}%
+\contentsline {paragraph}{Key-value cache quantization.}{126}{section*.89}%
+\contentsline {paragraph}{Gradient quantization.}{126}{section*.90}%
+\contentsline {paragraph}{Quantization during pretraining and fine-tuning.}{127}{section*.91}%
+\contentsline {subsection}{\numberline {3.3.6}Numerical formats, mixed precision, and hardware efficiency}{127}{subsection.3.3.6}%
+\contentsline {subsection}{\numberline {3.3.7}Evaluation, limitations, and connection to the next topic}{128}{subsection.3.3.7}%
+\contentsline {section}{\numberline {3.4}Knowledge Distillation}{130}{section.3.4}%
+\contentsline {subsection}{\numberline {3.4.1}Predictive distributions and the mathematical objective of distillation}{131}{subsection.3.4.1}%
+\contentsline {paragraph}{Temperature-scaled targets.}{133}{section*.92}%
+\contentsline {paragraph}{The optimization objective.}{133}{section*.93}%
+\contentsline {subsection}{\numberline {3.4.2}Knowledge interfaces: white-box and black-box distillation}{134}{subsection.3.4.2}%
+\contentsline {paragraph}{Logits-based white-box distillation.}{134}{section*.94}%
+\contentsline {paragraph}{Hint-based and representation distillation.}{134}{section*.95}%
+\contentsline {paragraph}{Black-box distillation through generated text.}{135}{section*.96}%
+\contentsline {paragraph}{Uncertainty-aware and multi-teacher distillation.}{135}{section*.97}%
+\contentsline {subsection}{\numberline {3.4.3}Post-training and pre-training distillation}{136}{subsection.3.4.3}%
+\contentsline {paragraph}{Truncating teacher logits.}{137}{section*.98}%
+\contentsline {paragraph}{Loss selection and scheduling.}{138}{section*.99}%
+\contentsline {paragraph}{Offline and online targets.}{138}{section*.100}%
+\contentsline {subsection}{\numberline {3.4.4}On-policy distillation and the student-state distribution}{139}{subsection.3.4.4}%
+\contentsline {paragraph}{Sampled-token objectives and variance reduction.}{139}{section*.101}%
+\contentsline {paragraph}{Sequence-level reverse KL and temporal credit.}{140}{section*.102}%
+\contentsline {subsection}{\numberline {3.4.5}Distillation scaling laws and compute allocation}{141}{subsection.3.4.5}%
+\contentsline {paragraph}{Compute accounting.}{142}{section*.103}%
+\contentsline {subsection}{\numberline {3.4.6}Dataset distillation and its integration with model distillation}{143}{subsection.3.4.6}%
+\contentsline {paragraph}{Gradient-matching formulations.}{143}{section*.104}%
+\contentsline {paragraph}{Generative synthesis and selection.}{144}{section*.105}%
+\contentsline {paragraph}{Combining dataset and knowledge distillation.}{144}{section*.106}%
+\contentsline {subsection}{\numberline {3.4.7}Evaluation of distilled language models}{144}{subsection.3.4.7}%
+\contentsline {subsection}{\numberline {3.4.8}Limitations and connection to parameter-efficient fine-tuning}{145}{subsection.3.4.8}%
+\contentsline {section}{\numberline {3.5}Parameter-Efficient Fine-Tuning}{146}{section.3.5}%
+\contentsline {subsection}{\numberline {3.5.1}From Full Fine-Tuning to Parameter-Efficient Adaptation}{146}{subsection.3.5.1}%
+\contentsline {paragraph}{General formulation and taxonomy.}{148}{section*.107}%
+\contentsline {subsection}{\numberline {3.5.2}Additive and Prompt-Based Adaptation}{150}{subsection.3.5.2}%
+\contentsline {paragraph}{Serial adapters.}{150}{section*.108}%
+\contentsline {paragraph}{Parallel and hybrid adapters.}{150}{section*.109}%
+\contentsline {paragraph}{Soft prompt tuning.}{151}{section*.110}%
+\contentsline {paragraph}{Prefix tuning.}{151}{section*.111}%
+\contentsline {paragraph}{Scaling-based adaptation.}{152}{section*.112}%
+\contentsline {subsection}{\numberline {3.5.3}Selective and Reparameterized Adaptation}{152}{subsection.3.5.3}%
+\contentsline {paragraph}{Gradient and Fisher-information criteria.}{152}{section*.113}%
+\contentsline {paragraph}{Unstructured and structured selection.}{153}{section*.114}%
+\contentsline {paragraph}{Low-rank reparameterization.}{153}{section*.115}%
+\contentsline {paragraph}{Dynamic rank and LoRA variants.}{154}{section*.116}%
+\contentsline {paragraph}{Hybrid, unified, and expert-based approaches.}{154}{section*.117}%
+\contentsline {subsection}{\numberline {3.5.4}Sparse Matrix Tuning and Comparative Analysis}{155}{subsection.3.5.4}%
+\contentsline {paragraph}{Task objective and block partitioning.}{155}{section*.118}%
+\contentsline {paragraph}{Gradient-aware block selection.}{156}{section*.119}%
+\contentsline {paragraph}{Partial weight-gradient computation.}{157}{section*.120}%
+\contentsline {paragraph}{Why attention and value projections?}{157}{section*.121}%
+\contentsline {paragraph}{Reported performance and system efficiency.}{159}{section*.122}%
+\contentsline {paragraph}{Complexity comparison.}{159}{section*.123}%
+\contentsline {subsection}{\numberline {3.5.5}Limitations, Research Directions, and Connection to Scaling}{160}{subsection.3.5.5}%
+\contentsline {chapter}{\numberline {4}Scaling Laws}{163}{chapter.4}%
+\contentsline {subsection}{\numberline {4.0.1}Predictive loss and the fundamental scaling variables}{164}{subsection.4.0.1}%
+\contentsline {paragraph}{Autoregressive prediction and cross-entropy.}{164}{section*.124}%
+\contentsline {paragraph}{Model size.}{165}{section*.125}%
+\contentsline {paragraph}{Training-data volume.}{165}{section*.126}%
+\contentsline {paragraph}{Training computation.}{166}{section*.127}%
+\contentsline {subsection}{\numberline {4.0.2}Power-law formulations and compute-optimal allocation}{167}{subsection.4.0.2}%
+\contentsline {paragraph}{Univariate power laws.}{167}{section*.128}%
+\contentsline {paragraph}{Multivariable power laws.}{167}{section*.129}%
+\contentsline {paragraph}{Compute-optimal resource allocation.}{168}{section*.130}%
+\contentsline {paragraph}{Kaplan-style and Chinchilla-style conclusions.}{169}{section*.131}%
+\contentsline {paragraph}{IsoFLOPs analysis.}{170}{section*.132}%
+\contentsline {subsection}{\numberline {4.0.3}Empirical fitting and validation}{170}{subsection.4.0.3}%
+\contentsline {paragraph}{Experimental observations and fitting objective.}{170}{section*.133}%
+\contentsline {paragraph}{Checkpoint selection and training trajectories.}{171}{section*.134}%
+\contentsline {paragraph}{Least-squares and robust objectives.}{171}{section*.135}%
+\contentsline {paragraph}{Nonlinear numerical optimization.}{172}{section*.136}%
+\contentsline {paragraph}{Logarithmic transformations.}{172}{section*.137}%
+\contentsline {paragraph}{Validation and predictive reliability.}{173}{section*.138}%
+\contentsline {paragraph}{Reproducibility.}{173}{section*.139}%
+\contentsline {subsection}{\numberline {4.0.4}Inference-efficient and architecture-aware scaling}{173}{subsection.4.0.4}%
+\contentsline {paragraph}{Training optimality versus deployment optimality.}{173}{section*.140}%
+\contentsline {paragraph}{Inference-constrained scaling.}{174}{section*.141}%
+\contentsline {paragraph}{Conditional architecture-aware scaling.}{175}{section*.142}%
+\contentsline {subsection}{\numberline {4.0.5}Joint scaling for mixture-of-experts models}{177}{subsection.4.0.5}%
+\contentsline {paragraph}{Stored parameters and active parameters.}{177}{section*.143}%
+\contentsline {paragraph}{Joint MoE scaling law.}{177}{section*.144}%
+\contentsline {paragraph}{Compute- and memory-constrained MoE scaling.}{177}{section*.145}%
+\contentsline {subsection}{\numberline {4.0.6}Limitations, synthesis, and transition}{178}{subsection.4.0.6}%
+\contentsline {part}{III\hspace {1em}Reinforcement Learning and Neuroscience}{180}{part.3}%
+\contentsline {chapter}{\numberline {5}Reinforcement Learning}{181}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Theoretical Foundations}{181}{section.5.1}%
+\contentsline {subsection}{\numberline {5.1.1}Markov decision processes, policies, and value functions}{181}{subsection.5.1.1}%
+\contentsline {subsection}{\numberline {5.1.2}Bellman operators and dynamic programming}{184}{subsection.5.1.2}%
+\contentsline {subsection}{\numberline {5.1.3}Policy improvement, performance difference, and approximation}{185}{subsection.5.1.3}%
+\contentsline {subsection}{\numberline {5.1.4}Information geometry and covariant policy search}{188}{subsection.5.1.4}%
+\contentsline {subsection}{\numberline {5.1.5}Trust-region policy optimization}{191}{subsection.5.1.5}%
+\contentsline {subsection}{\numberline {5.1.6}Regularized Markov decision processes}{194}{subsection.5.1.6}%
+\contentsline {subsection}{\numberline {5.1.7}Mirror descent and modified policy iteration}{196}{subsection.5.1.7}%
+\contentsline {subsection}{\numberline {5.1.8}Worked example and connection to autoregressive language models}{198}{subsection.5.1.8}%
+\contentsline {subsection}{\numberline {5.1.9}Limitations and connection to the next topic}{199}{subsection.5.1.9}%
+\contentsline {section}{\numberline {5.2}Actor--Critic Methods}{200}{section.5.2}%
+\contentsline {subsection}{\numberline {5.2.1}Sequential decision-making and the policy represented by the actor}{200}{subsection.5.2.1}%
+\contentsline {subsection}{\numberline {5.2.2}Value functions, the critic, and the advantage}{202}{subsection.5.2.2}%
+\contentsline {subsection}{\numberline {5.2.3}Temporal-difference estimation and generalized advantage estimation}{203}{subsection.5.2.3}%
+\contentsline {subsection}{\numberline {5.2.4}The actor--critic objective in Proximal Policy Optimization}{205}{subsection.5.2.4}%
+\contentsline {subsection}{\numberline {5.2.5}Mapping the actor--critic architecture onto language models}{207}{subsection.5.2.5}%
+\contentsline {subsection}{\numberline {5.2.6}Computational limitations and the transition beyond a learned critic}{208}{subsection.5.2.6}%
+\contentsline {section}{\numberline {5.3}Reinforcement Learning with Verifiable Rewards}{210}{section.5.3}%
+\contentsline {subsection}{\numberline {5.3.1}From autoregressive language modeling to outcome-based learning}{211}{subsection.5.3.1}%
+\contentsline {subsection}{\numberline {5.3.2}Verifiable rewards and the KL-regularized objective}{212}{subsection.5.3.2}%
+\contentsline {subsection}{\numberline {5.3.3}PPO optimization, value estimation, and implementation}{214}{subsection.5.3.3}%
+\contentsline {subsection}{\numberline {5.3.4}Verifiable data, training recipe, and empirical behavior}{217}{subsection.5.3.4}%
+\contentsline {subsection}{\numberline {5.3.5}Limitations, interpretation, and connection to GRPO}{222}{subsection.5.3.5}%
+\contentsline {section}{\numberline {5.4}Group Relative Policy Optimization for Verifiable Rewards}{223}{section.5.4}%
+\contentsline {chapter}{\numberline {6}Neuroscience and Cognitive Foundations}{224}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Introduction}{224}{section.6.1}%
+\contentsline {section}{\numberline {6.2}From System 1 to System 2}{224}{section.6.2}%
+\contentsline {part}{IV\hspace {1em}Data and Training}{225}{part.4}%
+\contentsline {chapter}{\numberline {7}Training Data}{226}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Pre-Training Data}{226}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Post-Training Data}{226}{section.7.2}%
+\contentsline {chapter}{\numberline {8}Training Methods}{227}{chapter.8}%
+\contentsline {section}{\numberline {8.1}Pre-Training}{227}{section.8.1}%
+\contentsline {section}{\numberline {8.2}Post-Training}{227}{section.8.2}%
+\contentsline {section}{\numberline {8.3}Machine Unlearning}{227}{section.8.3}%
+\contentsline {part}{V\hspace {1em}Evaluation, Impact, Philosophy, and Challenges}{228}{part.5}%
+\contentsline {chapter}{\numberline {9}Evaluation}{229}{chapter.9}%
+\contentsline {chapter}{\numberline {10}Environmental Impacts}{230}{chapter.10}%
+\contentsline {chapter}{\numberline {11}Philosophy}{231}{chapter.11}%
+\contentsline {chapter}{\numberline {12}Challenges}{232}{chapter.12}%

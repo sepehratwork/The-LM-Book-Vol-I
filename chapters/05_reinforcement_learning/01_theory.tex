@@ -1,0 +1,1316 @@
+% ============================================================================
+% 05_reinforcement_learning/01_theory.tex
+% Section body only: the master manuscript supplies the chapter/section title.
+% Figures are source files in the project-root figures/ directory and are
+% included with \input so that the diagrams remain editable LaTeX material.
+% ============================================================================
+
+The preceding discussion of model architecture, optimization, and scaling
+establishes how a language model can be represented and trained as a predictive
+system. It does not, by itself, specify how the model should change its behavior
+when the quality of a generated sequence is evaluated through a reward signal.
+That problem introduces a different mathematical object: a decision-making
+policy whose actions affect not only the immediate outcome but also the states
+and decisions that follow. Reinforcement learning provides a framework for
+reasoning about this sequential dependence.
+
+The purpose of this section is to establish the mathematical foundations needed
+to understand reinforcement learning as an optimization problem over policies.
+The development begins with Markov decision processes and Bellman operators,
+then proceeds to policy improvement and approximation error, information
+geometry and natural gradients, trust-region optimization, and regularized
+Markov decision processes. These topics are connected by a common question:
+how can a policy be improved while controlling the consequences of imperfect
+value estimates, changes in the distribution of visited states, and finite
+optimization steps? The cited papers provide the main theoretical structure
+for this development; the final connection to autoregressive language models
+is an application of that structure to the subject of this book.
+
+\subsection{Markov decision processes, policies, and value functions}
+\label{subsec:rl-mdp-value-functions}
+
+A reinforcement-learning problem is a sequential decision problem. At each
+decision time, an agent receives information about the current situation,
+selects an action, and observes the consequences of that action. The next
+situation depends on the current situation and action, and the reward may be
+delayed. Thus, maximizing the reward at the current time is generally not
+equivalent to maximizing the total reward accumulated over an interaction.
+The mathematical formulation used throughout the cited work is the discounted
+Markov decision process (MDP).
+
+For the finite-state and finite-action setting used to develop the matrix
+identities, an MDP is specified by
+\begin{equation}
+    \mathcal{M}
+    = (\mathcal{S},\mathcal{A},P,r,\gamma,\rho_0),
+    \label{eq:rl-mdp-tuple}
+\end{equation}
+where $\mathcal{S}$ is the state space, $\mathcal{A}$ is the action space,
+$P(s'\mid s,a)$ is the transition probability, $r(s,a)$ is the expected
+immediate reward, $\gamma\in(0,1)$ is the discount factor, and $\rho_0$ is the
+distribution of the initial state. For every state--action pair,
+\begin{equation}
+    P(s'\mid s,a)\geq 0,
+    \qquad
+    \sum_{s'\in\mathcal{S}}P(s'\mid s,a)=1.
+    \label{eq:rl-transition-normalization}
+\end{equation}
+The finite-state assumption is used only when vectors and matrices are written
+explicitly. The same definitions extend to general state spaces by replacing
+finite sums with integrals and transition matrices with probability kernels,
+as in the formulation considered by \textcite{scherrer2014approximate}.
+
+At time $t$, the agent is in state $s_t$, chooses action $a_t$, receives reward
+$r_t$, and the environment produces state $s_{t+1}$. The transition model is
+
+\begin{equation}
+    P(s'\mid s,a)
+    = \Pr(s_{t+1}=s'\mid s_t=s,a_t=a).
+    \label{eq:rl-transition-kernel}
+\end{equation}
+
+The Markov property states that, conditioned on the current state and action,
+the next-state distribution does not depend on the preceding history:
+\begin{equation}
+\begin{split}
+    &\Pr(s_{t+1}\mid s_t,a_t,s_{t-1},a_{t-1},\ldots,s_0)\\
+    &\hspace{3em}=P(s_{t+1}\mid s_t,a_t).
+\end{split}
+\label{eq:rl-markov-property}
+\end{equation}
+This is a conditional-independence assumption, not an assertion that the
+environment is deterministic. The transition may remain stochastic. The
+assumption says that the state representation contains the information needed
+to determine the conditional distribution of the next state. If the chosen
+state representation omits information relevant to future transitions or
+rewards, the process represented by that state need not be Markov.
+
+The policy specifies how the agent selects actions. A stochastic stationary
+policy is a conditional probability distribution
+\begin{equation}
+    \pi(a\mid s)
+    =\Pr(a_t=a\mid s_t=s),
+    \label{eq:rl-policy}
+\end{equation}
+with $\pi(\cdot\mid s)$ belonging to the probability simplex
+\begin{equation}
+    \Delta_{\mathcal{A}}
+    =\left\{p\in\mathbb{R}^{|\mathcal{A}|}:
+    p(a)\geq0,\ \sum_{a\in\mathcal{A}}p(a)=1\right\}.
+    \label{eq:rl-probability-simplex}
+\end{equation}
+A deterministic policy is a special case in which the distribution assigns
+probability one to a single action. The stochastic formulation is more general
+and is necessary for the probability-distribution optimization developed
+later in this section.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{\input{figures/rl_theory_mdp_loop.tex}}
+    \caption{The interaction represented by a Markov decision process. The agent
+    selects an action from its policy, and the environment returns the next
+    state and reward according to its transition and reward model.}
+    \label{fig:rl-mdp-loop}
+\end{figure}
+% Alt text for accessibility register: Two boxes represent the agent and the
+% environment. An action arrow points from the agent to the environment; a
+% state-and-reward arrow points back to the agent.
+
+The objective must account for the complete future reward sequence. For an
+infinite-horizon discounted problem, the return beginning at time $t$ is
+\begin{equation}
+    G_t=\sum_{k=0}^{\infty}\gamma^k r_{t+k}.
+    \label{eq:rl-return}
+\end{equation}
+The discount factor assigns weight one to the immediate reward and weight
+$\gamma^k$ to a reward received $k$ steps later. If rewards are bounded,
+$|r_t|\leq R_{\max}$, then
+\begin{equation}
+    |G_t|
+    \leq R_{\max}\sum_{k=0}^{\infty}\gamma^k
+    =\frac{R_{\max}}{1-\gamma}.
+    \label{eq:rl-return-bound}
+\end{equation}
+The geometric-series identity requires $0<\gamma<1$ and guarantees a bounded
+return under the bounded-reward assumption. As $\gamma$ approaches one, more
+distant rewards receive greater relative weight and the bound
+$R_{\max}/(1-\gamma)$ increases.
+
+The state-value function of a policy is the conditional expected return when
+the process starts at state $s$ and subsequently follows that policy:
+\begin{equation}
+    V^\pi(s)
+    =\mathbb{E}_{\pi}\!\left[
+    \sum_{k=0}^{\infty}\gamma^k r_{t+k}
+    \;\middle|\;s_t=s\right].
+    \label{eq:rl-state-value}
+\end{equation}
+The expectation is over both the policy's action distribution and the
+environment's transition distribution. The state--action value function
+conditions additionally on the first action:
+\begin{equation}
+    Q^\pi(s,a)
+    =\mathbb{E}\!\left[
+    \sum_{k=0}^{\infty}\gamma^k r_{t+k}
+    \;\middle|\;s_t=s,\ a_t=a,\ a_{t+j}\sim\pi\ (j\geq1)
+    \right].
+    \label{eq:rl-action-value}
+\end{equation}
+Thus, $V^\pi(s)$ evaluates the policy's action distribution at the current
+state, whereas $Q^\pi(s,a)$ evaluates a specified first action followed by the
+policy thereafter. Their relationship is
+\begin{equation}
+    V^\pi(s)
+    =\sum_{a\in\mathcal{A}}\pi(a\mid s)Q^\pi(s,a).
+    \label{eq:rl-vq-relation}
+\end{equation}
+
+The advantage function compares an action with the average value of the current
+policy at the same state:
+\begin{equation}
+    A^\pi(s,a)=Q^\pi(s,a)-V^\pi(s).
+    \label{eq:rl-advantage}
+\end{equation}
+A positive advantage means that the specified action has a greater expected
+return than the policy average at that state; a negative advantage means that
+its expected return is lower. From \cref{eq:rl-vq-relation} and the
+normalization of the policy,
+\begin{align}
+    \sum_a\pi(a\mid s)A^\pi(s,a)
+    &=\sum_a\pi(a\mid s)Q^\pi(s,a)
+      -V^\pi(s)\sum_a\pi(a\mid s)\\
+    &=V^\pi(s)-V^\pi(s)=0.
+    \label{eq:rl-zero-mean-advantage}
+\end{align}
+The zero-mean identity is central to policy optimization: the expected
+advantage under the current policy is zero at every state. The performance
+analysis of trust-region methods uses this identity when constructing a local
+surrogate objective \parencite{schulman2015trpo}.
+
+\subsection{Bellman operators and dynamic programming}
+\label{subsec:rl-bellman-dynamic-programming}
+
+The value functions are not only expectations over trajectories; they satisfy
+recursive equations. Decomposing the return into the immediate reward and the
+discounted return from the next time step gives
+\begin{equation}
+    G_t=r_t+\gamma G_{t+1}.
+    \label{eq:rl-return-recursion}
+\end{equation}
+Taking conditional expectations and using the Markov property yields the
+Bellman expectation equation:
+\begin{equation}
+    V^\pi(s)
+    =\sum_a\pi(a\mid s)
+    \left[r(s,a)+\gamma\sum_{s'}P(s'\mid s,a)V^\pi(s')\right].
+    \label{eq:rl-bellman-expectation}
+\end{equation}
+It states that the value of a state is the expected immediate reward plus the
+discounted value of the next state.
+
+For a finite state space with $n=|\mathcal{S}|$ and $m=|\mathcal{A}|$, define
+the policy reward vector $r_\pi\in\mathbb{R}^{n}$ and transition matrix
+$P_\pi\in\mathbb{R}^{n\times n}$ by
+\begin{equation}
+    r_\pi(s)=\sum_a\pi(a\mid s)r(s,a),
+    \qquad
+    P_\pi(s'\mid s)=\sum_a\pi(a\mid s)P(s'\mid s,a).
+    \label{eq:rl-policy-induced-model}
+\end{equation}
+Each row of $P_\pi$ is a probability distribution. Hence $P_\pi$ is
+row-stochastic, has nonnegative entries, and satisfies
+$\|P_\pi\|_\infty=1$ and spectral radius $\rho(P_\pi)\leq1$. In vector form,
+\cref{eq:rl-bellman-expectation} becomes
+\begin{equation}
+    V^\pi=r_\pi+\gamma P_\pi V^\pi.
+    \label{eq:rl-bellman-vector}
+\end{equation}
+Rearranging gives
+\begin{equation}
+    (I-\gamma P_\pi)V^\pi=r_\pi,
+    \qquad
+    V^\pi=(I-\gamma P_\pi)^{-1}r_\pi.
+    \label{eq:rl-policy-value-linear-system}
+\end{equation}
+The inverse exists because
+$\rho(\gamma P_\pi)\leq\gamma<1$. Equivalently, the Neumann series converges:
+\begin{equation}
+    (I-\gamma P_\pi)^{-1}
+    =\sum_{k=0}^{\infty}(\gamma P_\pi)^k,
+    \qquad
+    V^\pi=\sum_{k=0}^{\infty}\gamma^kP_\pi^k r_\pi.
+    \label{eq:rl-neumann-series}
+\end{equation}
+The term $P_\pi^k r_\pi$ is the expected reward vector after $k$ transitions
+under the policy. The Neumann expansion therefore recovers the discounted
+trajectory interpretation of the value function through linear algebra.
+The inverse in \cref{eq:rl-policy-value-linear-system} is a theoretical characterization, not a recommendation to form a dense matrix inverse numerically. A practical implementation solves the linear system with a sparse solver or uses iterative Bellman evaluation. The bound
+\begin{equation}
+    \|(I-\gamma P_\pi)^{-1}\|_\infty
+    \leq\sum_{k=0}^{\infty}\gamma^k
+    =\frac{1}{1-\gamma}
+    \label{eq:rl-policy-evaluation-conditioning}
+\end{equation}
+shows why the discounted system can become more sensitive as $\gamma$ approaches one: the inverse norm bound grows with the effective horizon. Iterative evaluation remains contractive, but its worst-case contraction factor is $\gamma$, so the number of iterations required for a fixed error tolerance also increases as $\gamma$ approaches one.
+
+For an arbitrary candidate value vector $v\in\mathbb{R}^{n}$, define the
+Bellman evaluation operator
+\begin{equation}
+    [T_\pi v](s)
+    =\sum_a\pi(a\mid s)
+    \left[r(s,a)+\gamma\sum_{s'}P(s'\mid s,a)v(s')\right].
+    \label{eq:rl-bellman-evaluation-operator}
+\end{equation}
+The value function is its fixed point, $V^\pi=T_\pi V^\pi$. The operator is a
+contraction in the supremum norm. For any $v_1,v_2$,
+\begin{align}
+    \|T_\pi v_1-T_\pi v_2\|_\infty
+    &=\gamma\|P_\pi(v_1-v_2)\|_\infty\\
+    &\leq\gamma\|P_\pi\|_\infty\|v_1-v_2\|_\infty\\
+    &=\gamma\|v_1-v_2\|_\infty.
+    \label{eq:rl-policy-contraction}
+\end{align}
+Because $\gamma<1$, repeated evaluation $v_{k+1}=T_\pi v_k$ converges to the
+unique fixed point $V^\pi$ for any initial vector $v_0$.
+
+Policy evaluation alone does not optimize the policy. To express optimization,
+replace the action average under a fixed policy with a maximum over actions.
+The Bellman optimality operator is
+\begin{equation}
+    [T^*v](s)
+    =\max_{a\in\mathcal{A}}
+    \left[r(s,a)+\gamma\sum_{s'}P(s'\mid s,a)v(s')\right].
+    \label{eq:rl-bellman-optimality}
+\end{equation}
+Its unique fixed point is the optimal value function $V^*$, and an optimal
+deterministic policy is greedy with respect to $V^*$:
+\begin{equation}
+    V^*=T^*V^*,
+    \qquad
+    \pi^*(s)\in\operatorname*{arg\,max}_{a}
+    \left[r(s,a)+\gamma\sum_{s'}P(s'\mid s,a)V^*(s')\right].
+    \label{eq:rl-optimal-policy}
+\end{equation}
+The inequality
+$|\max_a x_a-\max_a y_a|\leq\max_a|x_a-y_a|$ together with the stochastic
+normalization of $P$ gives
+\begin{equation}
+    \|T^*v_1-T^*v_2\|_\infty
+    \leq\gamma\|v_1-v_2\|_\infty.
+    \label{eq:rl-optimality-contraction}
+\end{equation}
+Thus, value iteration $v_{k+1}=T^*v_k$ converges to $V^*$.
+
+Policy iteration organizes the same fixed-point problem differently. It first
+evaluates a current policy, then improves it by choosing actions that maximize
+the one-step return computed from the current value function. If
+$G(v)=\operatorname*{arg\,max}_{\pi}T_\pi v$ denotes the greedy policy set,
+the exact update is
+\begin{equation}
+    v_k=V^{\pi_k},
+    \qquad
+    \pi_{k+1}\in G(v_k).
+    \label{eq:rl-policy-iteration}
+\end{equation}
+Modified policy iteration interpolates between a single optimality update and
+complete policy evaluation:
+\begin{equation}
+    \pi_{k+1}\in G(v_k),
+    \qquad
+    v_{k+1}=(T_{\pi_{k+1}})^m v_k.
+    \label{eq:rl-modified-policy-iteration}
+\end{equation}
+For $m=1$, the evaluation and greedy steps combine into a value-iteration
+update. As $m$ increases, the new policy is evaluated more fully; in the limit
+of exact evaluation, the update becomes policy iteration. This continuum is the
+starting point for the approximate and regularized schemes considered below
+\parencite{scherrer2014approximate,geist2019regularized}.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{\input{figures/rl_theory_policy_iteration.tex}}
+    \caption{The modified policy-iteration cycle. A value estimate is passed to
+    an approximate greedy step, the resulting policy is evaluated for $m$
+    Bellman steps, and the updated value estimate begins the next iteration.}
+    \label{fig:rl-policy-iteration}
+\end{figure}
+% Alt text for accessibility register: A left-to-right approximate greedy
+% update is followed by a downward policy-evaluation step and a return to the
+% updated value estimate.
+
+\subsection{Policy improvement, performance difference, and approximation}
+\label{subsec:rl-policy-improvement-approximation}
+
+The Bellman optimality equation characterizes an optimal value function, but
+policy optimization also requires a relation between the performance of two
+policies. Let $\rho_0$ be the initial-state distribution and define
+\begin{equation}
+    \eta(\pi)=\mathbb{E}_{s_0\sim\rho_0}[V^\pi(s_0)].
+    \label{eq:rl-policy-performance}
+\end{equation}
+For a policy $\pi$, its unnormalized discounted state-visitation frequency is
+\begin{equation}
+    \rho_\pi(s)
+    =\sum_{t=0}^{\infty}\gamma^t
+      \Pr(s_t=s\mid s_0\sim\rho_0,\pi).
+    \label{eq:rl-discounted-occupancy}
+\end{equation}
+The normalized discounted occupancy distribution is
+$d_{\pi,\rho_0}=(1-\gamma)\rho_\pi$ and, in row-vector notation,
+\begin{equation}
+    d_{\pi,\rho_0}
+    =(1-\gamma)\rho_0(I-\gamma P_\pi)^{-1}.
+    \label{eq:rl-normalized-occupancy}
+\end{equation}
+The normalization follows from
+$(1-\gamma)\sum_{t=0}^{\infty}\gamma^t=1$. This distribution weights states
+according to how often they are encountered under the policy, with later
+visits discounted.
+
+For two policies $\pi$ and $\widetilde\pi$, the performance difference
+identity is
+\begin{equation}
+    \eta(\widetilde\pi)
+    =\eta(\pi)
+    +\sum_s\rho_{\widetilde\pi}(s)
+      \sum_a\widetilde\pi(a\mid s)A^\pi(s,a).
+    \label{eq:rl-performance-difference}
+\end{equation}
+To see the source of the identity, write
+$A^\pi(s_t,a_t)=r_t+\gamma V^\pi(s_{t+1})-V^\pi(s_t)$ in conditional expectation,
+then sum the discounted terms along a trajectory generated by $\widetilde\pi$.
+The value terms telescope, leaving the difference between the new and old
+expected returns. Equation~\cref{eq:rl-performance-difference} shows that
+policy improvement depends on two coupled quantities: the advantages of the
+new policy's actions and the state-visitation distribution induced by the new
+policy. If the expected advantage is nonnegative at every state, the new policy
+cannot have lower performance. Exact greedy improvement satisfies this
+condition; approximate improvement need not.
+
+In approximate policy iteration, the exact greedy operator is replaced by an
+approximate one. For a reference distribution $\nu$, an approximate greedy
+policy can be characterized by
+\begin{equation}
+    \nu(Tv-T_\pi v)\leq\varepsilon,
+    \qquad
+    \nu f:=\mathbb{E}_{s\sim\nu}[f(s)],
+    \label{eq:rl-approx-greedy}
+\end{equation}
+where $\varepsilon\geq0$ is the greedy-step error. This is an average error
+under $\nu$, not a uniform guarantee over every state. In the exact case,
+$\varepsilon=0$, the policy is greedy on the support of $\nu$. The distinction
+matters because the distribution used to fit or evaluate the approximate greedy
+step need not match the state distribution induced by the resulting policy.
+
+The mismatch can be quantified using concentrability coefficients. Given a
+evaluation distribution $\mu$ and a reference distribution $\nu$, let $c(i)$ be
+a coefficient satisfying, componentwise,
+\begin{equation}
+    \mu P_{\pi_1}P_{\pi_2}\cdots P_{\pi_i}
+    \leq c(i)\nu
+    \label{eq:rl-concentrability}
+\end{equation}
+for all admissible sequences of policies of length $i$. A small $c(i)$ means
+that distributions reached after $i$ transitions remain covered by the
+reference distribution. A large or infinite coefficient indicates that the
+evaluation distribution can place substantial mass on states that are poorly
+represented under $\nu$. Weighted sums of the coefficients, with powers of
+$\gamma$, appear in performance bounds because errors propagated through many
+transitions are discounted but are not eliminated. Thus, an approximation error
+alone does not characterize the quality of an approximate policy-iteration
+method; the distribution mismatch appearing in its bound is also essential
+\parencite{scherrer2014approximate}.
+
+The standard Approximate Policy Iteration update is
+\begin{equation}
+    \pi_{k+1}
+    =G_{\varepsilon_{k+1}}(\nu,V^{\pi_k}),
+    \label{eq:rl-api}
+\end{equation}
+where the notation makes explicit that the approximate greedy operator depends
+on both the value estimate and the distribution under which its error is
+measured. Conservative Policy Iteration controls the change of policy by
+mixing the current policy with an approximately greedy policy:
+\begin{equation}
+    \pi_{k+1}
+    =(1-\alpha_{k+1})\pi_k
+      +\alpha_{k+1}
+      G_{\varepsilon_{k+1}}(d_{\pi_k,\rho_0},V^{\pi_k}).
+    \label{eq:rl-cpi}
+\end{equation}
+Here $\alpha_{k+1}\in(0,1]$ is a step size. The occupancy distribution is used
+in the greedy step, and a sufficiently conservative step can be selected to
+obtain an improvement guarantee. The API$(\alpha)$ variant also mixes policies but uses the reference
+distribution $\nu$ in its approximate greedy step:
+\begin{equation}
+    \pi_{k+1}=(1-\alpha)\pi_k
+       +\alpha G_{\varepsilon_{k+1}}(\nu,V^{\pi_k}).
+    \label{eq:rl-api-alpha}
+\end{equation}
+This is simpler to implement when sampling from the current policy's
+occupancy distribution is inconvenient.
+
+A different construction retains a sequence of policies rather than replacing
+the current policy by a mixture. Given stationary policies
+$\pi_1,\ldots,\pi_k$, define the finite non-stationary sequence
+$\sigma_k=\pi_k\pi_{k-1}\cdots\pi_1$, where the first action uses $\pi_k$, the
+next uses $\pi_{k-1}$, and so forth. Its value is
+\begin{equation}
+    V^{\sigma_k}
+    =T_{\pi_k}T_{\pi_{k-1}}\cdots T_{\pi_1}r.
+    \label{eq:rl-psdp-value}
+\end{equation}
+The infinite-horizon extension called $\mathrm{PSDP}_\infty$ constructs the
+sequence iteratively through
+\begin{equation}
+    \pi_{k+1}
+    =G_{\varepsilon_{k+1}}(\nu,V^{\sigma_k}),
+    \label{eq:rl-psdp}
+\end{equation}
+and can return a periodic policy that repeats the retained finite sequence.
+The Non-Stationary Policy Iteration method with period $m$ retains only the
+most recent $m$ policies and repeatedly executes
+$\sigma_k^m=\pi_k\pi_{k-1}\cdots\pi_{k-m+1}$. Its next policy is obtained
+from the value of the periodic extension of this sequence:
+\begin{equation}
+    \pi_{k+1}=G_{\varepsilon_{k+1}}
+       \bigl(\nu,V^{(\sigma_k^m)^\infty}\bigr).
+    \label{eq:rl-nspi}
+\end{equation}
+It therefore creates a continuum between the one-policy memory of API and
+the longer memory required by $\mathrm{PSDP}_\infty$.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Qualitative comparison of the approximate policy-iteration schemes
+    analyzed by \textcite{scherrer2014approximate}. The guarantees depend on the
+    concentrability coefficients and approximation assumptions, not only on
+    the algorithm name.}
+    \label{tab:rl-approximate-policy-iteration}
+    \begin{tabularx}{\textwidth}{lXX}
+        \toprule
+        Scheme & Policy update structure & Principal theoretical or computational trade-off \\
+        \midrule
+        API & Replace the current policy with an approximately greedy policy. & Constant memory; its bounds use more restrictive concentrability coefficients. \\
+        CPI & Mix the current policy with an approximately greedy policy computed under its occupancy distribution. & Can have stronger performance guarantees, but may require substantially more iterations and occupancy-distribution sampling. \\
+        $\mathrm{PSDP}_\infty$ & Improve a growing non-stationary sequence of policies. & Combines a strong guarantee with an API-like iteration requirement, at the cost of memory growing with the number of iterations. \\
+        NSPI$(m)$ & Repeat a sequence containing only the most recent $m$ policies. & Makes memory proportional to $m$ and exposes a trade-off between memory and the performance bound. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+The comparison in \cref{tab:rl-approximate-policy-iteration} should not be read
+as a universal ranking independent of the MDP. Scherrer's analysis shows that
+the hierarchy of concentrability coefficients can make one guarantee finite
+while another is infinite. Under the bounds analyzed in that paper, CPI can
+have a substantially stronger guarantee than API, but its iteration requirement
+can grow on the order of $1/\varepsilon^2$, whereas API has a logarithmic
+iteration dependence on $1/\varepsilon$. The $\mathrm{PSDP}_\infty$ construction
+combines a CPI-like guarantee with an API-like iteration requirement, while
+requiring storage for the policies accumulated along the sequence. NSPI$(m)$
+limits that storage to a fixed window. The conclusion is methodological:
+performance, iteration complexity, memory, and state-distribution coverage must
+be analyzed together \parencite{scherrer2014approximate}.
+
+\subsection{Information geometry and covariant policy search}
+\label{subsec:rl-information-geometry}
+
+When a policy is represented by a differentiable model, its probability
+function depends on a parameter vector $\theta\in\mathbb{R}^d$:
+$\pi_\theta(a\mid s)$. The objective is to maximize the expected return
+$J(\theta)=\eta(\pi_\theta)$. Ordinary gradient ascent takes the form
+\begin{equation}
+    \theta_{k+1}
+    =\theta_k+\alpha\nabla_\theta J(\theta_k).
+    \label{eq:rl-euclidean-gradient}
+\end{equation}
+This update measures step size using Euclidean distance in parameter space.
+However, the parameter vector is a coordinate description of a policy, not the
+behavioral object itself. Two different parameterizations can represent the
+same family of probability distributions while assigning different Euclidean
+lengths and directions to corresponding changes in policy behavior.
+
+Suppose that another parameterization is defined by a differentiable invertible
+coordinate transformation $\phi=f(\theta)$. For a small displacement,
+$\Delta\phi\simeq J_f(\theta)\Delta\theta$, where $J_f$ is the Jacobian of the
+coordinate transformation. A geometric update should transform consistently
+with this change of coordinates. An ordinary Euclidean gradient generally does
+not have this property. This is the non-covariance problem addressed by
+\textcite{bagnell2003covariant}.
+
+A Riemannian metric assigns an inner product to local tangent directions. In
+parameter coordinates, let $F(\theta)$ be a positive-definite metric tensor on
+the identifiable tangent directions. The local squared length of an update is
+\begin{equation}
+    \|\Delta\theta\|_{F}^{2}
+    =\Delta\theta^{\mathsf T}F(\theta)\Delta\theta.
+    \label{eq:rl-riemannian-length}
+\end{equation}
+The direction of steepest first-order ascent under a fixed metric length is the
+solution of
+\begin{equation}
+    \max_{\Delta\theta}\quad
+    \nabla_\theta J(\theta)^{\mathsf T}\Delta\theta
+    \quad\text{subject to}\quad
+    \Delta\theta^{\mathsf T}F(\theta)\Delta\theta\leq\delta^2.
+    \label{eq:rl-natural-gradient-problem}
+\end{equation}
+Introducing a Lagrange multiplier and differentiating with respect to
+$\Delta\theta$ gives
+$\nabla_\theta J-\lambda F\Delta\theta=0$. Therefore, up to a positive step
+length, the natural-gradient direction is
+\begin{equation}
+    \widetilde{\nabla}_\theta J(\theta)
+    =F(\theta)^{-1}\nabla_\theta J(\theta).
+    \label{eq:rl-natural-gradient}
+\end{equation}
+If the metric is singular because the parameterization contains redundant
+directions, the inverse is understood on the identifiable subspace or replaced
+by a suitable generalized inverse. The metric changes the direction, not merely
+the scalar learning rate.
+
+The metric used by covariant policy search is derived from the probability
+distribution over trajectories induced by the stochastic controller. For a
+finite trajectory $\tau=(s_0,a_0,\ldots,s_T)$, its probability is
+\begin{equation}
+    p_\theta(\tau)
+    =\rho_0(s_0)
+      \prod_{t=0}^{T-1}
+      \pi_\theta(a_t\mid s_t)P(s_{t+1}\mid s_t,a_t).
+    \label{eq:rl-trajectory-probability}
+\end{equation}
+When the initial-state distribution and environment dynamics do not depend on
+$\theta$, the trajectory score is
+\begin{equation}
+    \nabla_\theta\log p_\theta(\tau)
+    =\sum_{t=0}^{T-1}
+      \nabla_\theta\log\pi_\theta(a_t\mid s_t).
+    \label{eq:rl-trajectory-score}
+\end{equation}
+The Fisher information matrix of the trajectory distribution is
+\begin{equation}
+    F_T(\theta)
+    =\mathbb{E}_{\tau\sim p_\theta}
+      \left[
+      \nabla_\theta\log p_\theta(\tau)
+      \nabla_\theta\log p_\theta(\tau)^{\mathsf T}
+      \right].
+    \label{eq:rl-trajectory-fisher}
+\end{equation}
+It is positive semidefinite because, for every vector $x$,
+$x^{\mathsf T}F_Tx$ is the expectation of the nonnegative random variable
+$(x^{\mathsf T}\nabla_\theta\log p_\theta(\tau))^2$. The Fisher matrix measures
+how sensitively the trajectory distribution changes when the policy parameters
+change.
+The same trajectory score gives the likelihood-ratio policy-gradient identity. For an episodic trajectory return $R(\tau)$,
+\begin{align}
+    \nabla_\theta J(\theta)
+    &=\nabla_\theta\int p_\theta(\tau)R(\tau)\,d\tau\\
+    &=\int p_\theta(\tau)R(\tau)
+      \nabla_\theta\log p_\theta(\tau)\,d\tau\\
+    &=\mathbb{E}_{\tau\sim p_\theta}
+      \left[R(\tau)\nabla_\theta\log p_\theta(\tau)\right].
+    \label{eq:rl-score-function-gradient}
+\end{align}
+The second equality follows from $\nabla p=p\nabla\log p$ and requires that differentiation can be interchanged with integration. Substituting the trajectory score from \cref{eq:rl-trajectory-score} expresses the gradient as a sum of per-decision score terms. A state-dependent baseline can be subtracted without changing the expectation because $\mathbb{E}_{a\sim\pi_\theta(\cdot\mid s)}[\nabla_\theta\log\pi_\theta(a\mid s)]=0$. Choosing a value baseline gives the advantage-weighted form used in policy optimization:
+\begin{equation}
+    \nabla_\theta J(\theta)
+    =\mathbb{E}_{\pi_\theta}
+      \left[\sum_t \gamma^t\nabla_\theta\log\pi_\theta(a_t\mid s_t)
+      A^{\pi_\theta}(s_t,a_t)\right],
+    \label{eq:rl-advantage-policy-gradient}
+\end{equation}
+with the trajectory weighting and discount convention chosen consistently with $J$. This identity explains why advantage estimation is central to the actor--critic methods developed in the next section.
+
+For the discounted start-state formulation, the corresponding state weighting
+is the normalized discounted occupancy distribution. The per-decision policy
+Fisher matrix can consequently be written as
+\begin{equation}
+    F(\theta)
+    =\mathbb{E}_{\substack{s\sim d_{\pi_\theta,\rho_0}\\
+                            a\sim\pi_\theta(\cdot\mid s)}}
+      \left[
+      \nabla_\theta\log\pi_\theta(a\mid s)
+      \nabla_\theta\log\pi_\theta(a\mid s)^{\mathsf T}
+      \right],
+    \label{eq:rl-occupancy-fisher}
+\end{equation}
+up to the normalization convention used for the trajectory objective. In an
+ergodic average-reward formulation, the analogous weighting is the stationary
+state distribution. This construction makes the metric depend on the
+probabilistic behavior of the controller rather than on an arbitrary Euclidean
+coordinate system \parencite{bagnell2003covariant}.
+
+The Fisher metric is locally related to the Kullback--Leibler divergence. For
+nearby parameters and a regular differentiable model,
+\begin{equation}
+    D_{\mathrm{KL}}(p_\theta\|p_{\theta+\Delta\theta})
+    =\frac{1}{2}\Delta\theta^{\mathsf T}F_T(\theta)
+      \Delta\theta+o(\|\Delta\theta\|^2).
+    \label{eq:rl-fisher-kl-expansion}
+\end{equation}
+Thus, the Fisher matrix is the local quadratic form of statistical
+ distinguishability between nearby trajectory distributions. This explains why
+the natural gradient is a steepest-ascent direction when policy changes are
+measured through their effect on probability distributions.
+
+The same geometry connects to compatible actor--critic approximation. Define
+the policy score feature
+$\psi_\theta(s,a)=\nabla_\theta\log\pi_\theta(a\mid s)$ and a compatible
+advantage approximator
+\begin{equation}
+    A_w(s,a)=w^{\mathsf T}\psi_\theta(s,a).
+    \label{eq:rl-compatible-critic}
+\end{equation}
+Under the same state--action weighting used to define the policy gradient,
+the least-squares normal equations for this compatible approximation take the
+form $F(\theta)w=g$, where $g=\nabla_\theta J(\theta)$, provided the compatible
+features and the policy-gradient identity are used consistently. Hence
+\begin{equation}
+    w=F(\theta)^{-1}g.
+    \label{eq:rl-compatible-natural-gradient}
+\end{equation}
+This result explains the relationship between the geometry of the policy
+family and actor--critic estimation discussed by \textcite{bagnell2003covariant}.
+It does not imply that an arbitrary critic architecture is compatible; the
+feature form in \cref{eq:rl-compatible-critic} is the relevant condition.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{\input{figures/rl_theory_information_geometry.tex}}
+    \caption{The information-geometric route from policy parameters to a
+    trajectory distribution, its Fisher metric, and a trust-region-limited
+    natural-gradient update.}
+    \label{fig:rl-information-geometry}
+\end{figure}
+% Alt text for accessibility register: Parameter coordinates define a policy
+% and a trajectory distribution. The trajectory distribution defines a Fisher
+% metric, which is used to scale the policy gradient and constrain a KL update.
+
+\subsection{Trust-region policy optimization}
+\label{subsec:rl-trust-region-policy-optimization}
+
+The natural gradient supplies a geometrically meaningful direction, but a
+direction alone does not specify a safe step length. A large update can leave
+the region in which a local approximation is reliable. Trust Region Policy
+Optimization (TRPO) addresses this issue by maximizing a surrogate objective
+while constraining the divergence between the old and new policies
+\parencite{schulman2015trpo}.
+
+For a current policy $\pi$, the performance difference identity in
+\cref{eq:rl-performance-difference} depends on the state-visitation frequency
+$\rho_{\widetilde\pi}$ of the new policy. Directly optimizing this expression
+is difficult because the state distribution changes with the policy. TRPO
+replaces this new-policy occupancy with the old-policy occupancy and defines
+\begin{equation}
+    L_\pi(\widetilde\pi)
+    =\eta(\pi)
+     +\sum_s\rho_\pi(s)
+       \sum_a\widetilde\pi(a\mid s)A^\pi(s,a).
+    \label{eq:rl-trpo-surrogate}
+\end{equation}
+At the old policy, $L_\pi(\pi)=\eta(\pi)$ because the expected advantage is
+zero. For a differentiable parameterized policy, the surrogate and the true
+objective also have the same first derivative at the old parameter value.
+This makes the surrogate a first-order local approximation, but it does not
+justify arbitrarily large policy changes.
+
+To bound the error caused by the changed state distribution, define total
+variation divergence for discrete distributions by
+\begin{equation}
+    D_{\mathrm{TV}}(p,q)
+    =\frac{1}{2}\sum_a|p(a)-q(a)|,
+    \qquad
+    \alpha=\max_sD_{\mathrm{TV}}
+    (\pi(\cdot\mid s),\widetilde\pi(\cdot\mid s)),
+    \label{eq:rl-total-variation}
+\end{equation}
+and let $\epsilon=\max_{s,a}|A^\pi(s,a)|$. The policy-improvement theorem
+proved by \textcite{schulman2015trpo} states
+\begin{equation}
+    \eta(\widetilde\pi)
+    \geq L_\pi(\widetilde\pi)
+       -\frac{4\epsilon\gamma}{(1-\gamma)^2}\alpha^2.
+    \label{eq:rl-trpo-tv-bound}
+\end{equation}
+The quadratic dependence on $\alpha$ reflects the fact that two policies can
+be coupled to select the same action with high probability when their
+state-wise total variation distance is small. Their trajectories remain
+identical until a disagreement occurs; the resulting occupancy mismatch is
+therefore controlled by a second-order term.
+
+Using the inequality
+$D_{\mathrm{TV}}(p,q)^2\leq D_{\mathrm{KL}}(p\|q)$, define
+\begin{equation}
+    D_{\mathrm{KL}}^{\max}(\pi,\widetilde\pi)
+    =\max_sD_{\mathrm{KL}}
+      (\pi(\cdot\mid s)\|\widetilde\pi(\cdot\mid s)),
+    \qquad
+    C=\frac{4\epsilon\gamma}{(1-\gamma)^2}.
+    \label{eq:rl-trpo-kl-definitions}
+\end{equation}
+Then the lower bound becomes
+\begin{equation}
+    \eta(\widetilde\pi)
+    \geq L_\pi(\widetilde\pi)
+       -C D_{\mathrm{KL}}^{\max}(\pi,\widetilde\pi).
+    \label{eq:rl-trpo-kl-bound}
+\end{equation}
+The maximum state-wise divergence is the quantity required by this theoretical
+bound. Maximizing the right-hand side at every iteration produces a
+non-decreasing sequence of true policy performances under the theorem's
+assumptions. In particular, the current policy is feasible and gives equality
+in the lower bound, so maximizing the lower-bound objective cannot reduce its
+value.
+
+The exact maximum-KL constraint is difficult to enforce over a large state
+space. TRPO therefore uses a practical average-divergence approximation. For a
+state distribution $\rho$, define
+\begin{equation}
+    D_{\mathrm{KL}}^{\rho}(\theta_{\mathrm{old}},\theta)
+    =\mathbb{E}_{s\sim\rho}
+      \left[
+      D_{\mathrm{KL}}\bigl(
+      \pi_{\theta_{\mathrm{old}}}(\cdot\mid s)
+      \|\pi_\theta(\cdot\mid s)\bigr)
+      \right].
+    \label{eq:rl-trpo-average-kl}
+\end{equation}
+The practical constrained problem is
+\begin{equation}
+    \begin{aligned}
+        \max_\theta\quad&L_{\theta_{\mathrm{old}}}(\theta)\\
+        \text{subject to}\quad&
+        D_{\mathrm{KL}}^{\rho_{\mathrm{old}}}
+        (\theta_{\mathrm{old}},\theta)\leq\delta.
+    \end{aligned}
+    \label{eq:rl-trpo-practical-problem}
+\end{equation}
+Replacing the maximum state-wise constraint by an average is a practical
+approximation; it does not, without additional assumptions, retain the exact
+monotonic-improvement guarantee of \cref{eq:rl-trpo-kl-bound}. This distinction
+between the theorem and the implementable approximation is essential when
+interpreting TRPO.
+
+The objective can be estimated from trajectories sampled under the old policy.
+An importance-sampling representation of the action expectation is
+\begin{equation}
+    \mathbb{E}_{a\sim\pi_{\mathrm{old}}(\cdot\mid s)}
+    \left[
+    \frac{\pi_\theta(a\mid s)}
+         {\pi_{\mathrm{old}}(a\mid s)}
+    A^{\pi_{\mathrm{old}}}(s,a)
+    \right],
+    \label{eq:rl-trpo-importance-ratio}
+\end{equation}
+provided the sampling distribution has support wherever the updated policy
+assigns probability. TRPO describes a single-path estimator, which samples
+trajectories from the old policy and estimates action values from discounted
+rewards along each trajectory. It also describes a vine estimator, which
+selects states from sampled trajectories, evaluates multiple actions from each
+selected state, and can use common random numbers across rollouts to reduce the
+variance of action-value comparisons. The single-path method is applicable in
+model-free settings where the system cannot be reset to an arbitrary state; the
+vine method is particularly natural in a simulator that permits such resets
+\parencite{schulman2015trpo}.
+
+The local constrained problem connects TRPO directly to the natural gradient.
+Let $g=\nabla_\theta L_{\theta_{\mathrm{old}}}(\theta)$ evaluated at
+$\theta_{\mathrm{old}}$. A second-order expansion of the KL constraint gives
+\begin{equation}
+    D_{\mathrm{KL}}^{\rho_{\mathrm{old}}}
+    (\theta_{\mathrm{old}},\theta_{\mathrm{old}}+\Delta\theta)
+    \simeq\frac{1}{2}\Delta\theta^{\mathsf T}F\Delta\theta,
+    \label{eq:rl-trpo-fisher-quadratic}
+\end{equation}
+where $F$ is the Fisher information matrix under the old-policy state
+weighting. The local optimization is therefore
+\begin{equation}
+    \max_{\Delta\theta}g^{\mathsf T}\Delta\theta
+    \quad\text{subject to}\quad
+    \frac{1}{2}\Delta\theta^{\mathsf T}F\Delta\theta\leq\delta.
+    \label{eq:rl-trpo-local-problem}
+\end{equation}
+The Lagrange-multiplier solution is proportional to $F^{-1}g$. If
+$s=F^{-1}g$, the step length that saturates the quadratic constraint is
+\begin{equation}
+    \beta=\sqrt{\frac{2\delta}{s^{\mathsf T}Fs}},
+    \qquad
+    \Delta\theta=\beta s.
+    \label{eq:rl-trpo-step-length}
+\end{equation}
+Thus, the Fisher matrix determines the direction and the trust-region radius
+determines the scale.
+
+For a neural policy with $d$ parameters, explicitly storing a dense Fisher
+matrix requires $O(d^2)$ memory, and a dense factorization or inverse can
+require $O(d^3)$ arithmetic operations. TRPO avoids forming the dense inverse
+by solving $Fs=g$ approximately with conjugate gradients. Conjugate gradients
+requires repeated matrix--vector products $Fv$, which can be obtained through
+Hessian--vector products of the KL objective using automatic differentiation.
+The number of conjugate-gradient iterations controls the accuracy of the
+linear-system solution. After obtaining a candidate direction, a backtracking
+line search evaluates the actual nonlinear surrogate and KL divergence; it
+reduces the step until the candidate improves the surrogate and satisfies the
+practical divergence constraint. The line search is needed because the
+first-order objective approximation and quadratic KL approximation are local,
+not globally exact.
+
+\begin{algorithm}[H]
+\caption{Sample-based trust-region policy optimization}
+\label{alg:rl-trpo}
+\KwIn{Initial policy parameters $\theta_0$, KL radius $\delta$,
+      trajectory sampler, conjugate-gradient tolerance, and line-search rule.}
+\KwOut{Updated policy parameters $\theta$.}
+Set $\theta\leftarrow\theta_0$\;
+\While{the stopping condition is not satisfied}{
+    Set $\theta_{\mathrm{old}}\leftarrow\theta$\;
+    Collect trajectories using $\pi_{\theta_{\mathrm{old}}}$ and estimate advantages\;
+    Estimate the surrogate gradient $g$ and Fisher-vector products $v\mapsto Fv$\;
+    Approximately solve $Fs=g$ with conjugate gradients\;
+    Scale $s$ using the quadratic KL constraint to obtain a candidate step\;
+    Evaluate backtracking candidates using the sampled surrogate and average KL\;
+    \If{a candidate improves the surrogate and satisfies the KL constraint}{
+        Accept the candidate as the new $\theta$\;
+    }
+    \Else{
+        Retain $\theta_{\mathrm{old}}$ and terminate if the line search fails\;
+    }
+}
+\end{algorithm}
+
+The algorithm in \cref{alg:rl-trpo} separates statistical estimation from
+numerical optimization. Its sample quality depends on the trajectory estimator
+and advantage estimates; its local optimization quality depends on the
+Fisher-vector products and conjugate-gradient accuracy; and its final accepted
+step depends on the actual surrogate and KL evaluations. TRPO is therefore not
+an exact solution of the original constrained problem, but a practical
+approximation to a theoretically motivated policy-improvement procedure
+\parencite{schulman2015trpo}.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{\input{figures/rl_theory_trpo_pipeline.tex}}
+    \caption{The sample-based TRPO pipeline, from old-policy trajectories and advantage
+    estimates through the Fisher-system solve to a line-searched update.}
+    \label{fig:rl-trpo-geometry}
+\end{figure}
+% Alt text for accessibility register: The policy parameterization induces a
+% trajectory distribution; its Fisher matrix scales the gradient, and a KL
+% radius limits the resulting parameter update.
+
+\subsection{Regularized Markov decision processes}
+\label{subsec:rl-regularized-mdps}
+
+Trust-region optimization limits the change between successive policies. A
+related but more general strategy modifies the policy optimization objective
+through a regularizer. The theory developed by
+\textcite{geist2019regularized} treats regularized Markov decision processes
+using convex analysis and a generalized Bellman framework. The central idea is
+to define the regularizer over action distributions at each state and then
+incorporate it into the Bellman evaluation and optimality operators.
+
+Let $\Omega:\Delta_{\mathcal A}\rightarrow\mathbb{R}$ be a strongly convex
+regularizer. For a value function $v$, define the one-step action-value vector
+\begin{equation}
+    q_v(s,a)
+    =r(s,a)+\gamma\sum_{s'}P(s'\mid s,a)v(s').
+    \label{eq:rl-one-step-q}
+\end{equation}
+The regularized greedy distribution at state $s$ solves
+\begin{equation}
+    \pi^*_s
+    =\operatorname*{arg\,max}_{p\in\Delta_{\mathcal A}}
+      \left[\langle p,q_v(s,\cdot)\rangle-\Omega(p)\right].
+    \label{eq:rl-regularized-greedy}
+\end{equation}
+The linear term favors actions with high expected return; the regularizer
+changes the preferred distribution according to the chosen convex geometry.
+Strong convexity makes the maximizer unique under the framework's assumptions.
+
+The Legendre--Fenchel convex conjugate of $\Omega$ is
+\begin{equation}
+    \Omega^*(q)
+    =\max_{p\in\Delta_{\mathcal A}}
+      \left[\langle p,q\rangle-\Omega(p)\right].
+    \label{eq:rl-legendre-fenchel}
+\end{equation}
+When the conjugate is differentiable, its gradient returns the unique
+maximizing distribution:
+\begin{equation}
+    \pi_s^*=\nabla\Omega^*(q_v(s,\cdot)).
+    \label{eq:rl-conjugate-policy}
+\end{equation}
+The convex conjugate therefore converts a regularized optimization over the
+probability simplex into a value function of the action-value vector.
+
+For negative Shannon entropy,
+\begin{equation}
+    \Omega(p)=\sum_a p(a)\log p(a),
+    \label{eq:rl-negative-entropy}
+\end{equation}
+with the convention $0\log0=0$, the conjugate is the log-sum-exp function:
+\begin{equation}
+    \Omega^*(q)=\log\sum_a e^{q(a)},
+    \qquad
+    \nabla\Omega^*(q)(a)
+    =\frac{e^{q(a)}}{\sum_b e^{q(b)}}.
+    \label{eq:rl-softmax-conjugate}
+\end{equation}
+Thus, negative-entropy regularization yields a softmax policy. If the regularizer
+is scaled by a temperature $\tau>0$, so that $\Omega_\tau(p)=
+\tau\sum_a p(a)\log p(a)$, its conjugate is
+$\Omega_\tau^*(q)=\tau\log\sum_a e^{q(a)/\tau}$ and the policy is
+$\pi(a)=e^{q(a)/\tau}/\sum_b e^{q(b)/\tau}$. For example, the quadratic regularizer
+$\Omega(p)=\tfrac{1}{2}(\|p\|_2^2-1)$ is associated with the order-two
+Tsallis construction and yields a sparsemax-type solution, which can assign
+exactly zero probability to some actions. These examples show that the regularizer
+ determines the form of the regularized greedy policy
+\parencite{geist2019regularized}.
+
+The regularized Bellman evaluation operator is
+\begin{equation}
+    [T_{\pi,\Omega}v](s)
+    =\langle\pi(\cdot\mid s),q_v(s,\cdot)\rangle
+     -\Omega(\pi(\cdot\mid s)),
+    \label{eq:rl-regularized-evaluation}
+\end{equation}
+and the regularized optimality operator is
+\begin{equation}
+    [T^*_{\Omega}v](s)
+    =\max_{p\in\Delta_{\mathcal A}}
+      \left[\langle p,q_v(s,\cdot)\rangle-\Omega(p)\right]
+    =\Omega^*(q_v(s,\cdot)).
+    \label{eq:rl-regularized-optimality}
+\end{equation}
+The regularized value functions are fixed points of these operators:
+$V^{\pi,\Omega}=T_{\pi,\Omega}V^{\pi,\Omega}$ and
+$V^{*,\Omega}=T^*_{\Omega}V^{*,\Omega}$. The regularized greedy policy is
+$G_\Omega(v)=\nabla\Omega^*(q_v)$.
+
+The regularized operators preserve the key properties needed for dynamic
+programming. They are monotone: if $v_1\geq v_2$ componentwise, then
+$T_{\pi,\Omega}v_1\geq T_{\pi,\Omega}v_2$ and
+$T^*_{\Omega}v_1\geq T^*_{\Omega}v_2$. They also satisfy constant-shift
+identities,
+\begin{equation}
+    T_{\pi,\Omega}(v+c\mathbf{1})
+    =T_{\pi,\Omega}v+\gamma c\mathbf{1},
+    \qquad
+    T^*_{\Omega}(v+c\mathbf{1})
+    =T^*_{\Omega}v+\gamma c\mathbf{1},
+    \label{eq:rl-regularized-shift}
+\end{equation}
+because transition probabilities sum to one and the regularizer does not
+depend on $v$. Finally, both operators are $\gamma$-contractions in the
+supremum norm:
+\begin{equation}
+    \|T_{\pi,\Omega}v_1-T_{\pi,\Omega}v_2\|_\infty
+    \leq\gamma\|v_1-v_2\|_\infty,
+    \qquad
+    \|T^*_{\Omega}v_1-T^*_{\Omega}v_2\|_\infty
+    \leq\gamma\|v_1-v_2\|_\infty.
+    \label{eq:rl-regularized-contraction}
+\end{equation}
+The regularized Bellman operators therefore have unique fixed points, and
+regularized value iteration converges under the same discounted contraction
+logic as its unregularized counterpart \parencite{geist2019regularized}.
+
+A fixed regularizer changes the objective, so the optimal regularized policy
+need not be optimal for the original unregularized MDP. If the regularizer is
+bounded on the simplex,
+\begin{equation}
+    L_\Omega\leq\Omega(p)\leq U_\Omega
+    \qquad\text{for all }p\in\Delta_{\mathcal A},
+    \label{eq:rl-regularizer-bounds}
+\end{equation}
+then the regularized and unregularized values differ by a bounded amount.
+In particular, the unregularized value of the regularized optimal policy
+satisfies
+\begin{equation}
+    V^* - V^{\pi^{*,\Omega}}
+    \leq\frac{U_\Omega-L_\Omega}{1-\gamma}\mathbf{1}.
+    \label{eq:rl-regularization-gap}
+\end{equation}
+The range of the regularizer and the discount horizon therefore determine a
+bound on the cost of solving the regularized rather than the original problem.
+This is distinct from a claim that regularization always improves the
+unregularized optimum; it controls the difference between the two objectives
+under the stated boundedness assumptions \parencite{geist2019regularized}.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{\input{figures/rl_theory_regularized_mdp.tex}}
+    \caption{Regularized policy improvement. The action-value vector is passed
+    through the convex conjugate to obtain a regularized policy; in the
+    proximal form, the new policy is additionally kept close to the previous
+    policy by a Bregman divergence.}
+    \label{fig:rl-regularized-mdp}
+\end{figure}
+% Alt text for accessibility register: Action values feed a convex-conjugate
+% mapping to a regularized policy. A second path shows the previous policy and
+% Bregman divergence entering a proximal policy update.
+
+\subsection{Mirror descent and modified policy iteration}
+\label{subsec:rl-mirror-descent-mdpi}
+
+A fixed regularizer modifies the optimal solution of the MDP. An alternative
+is to regularize each update by penalizing the divergence between the new policy
+and the policy from the previous iteration. This makes the regularization
+iteration-dependent and connects policy improvement to proximal convex
+optimization.
+
+For a differentiable convex function $\Omega$, the Bregman divergence from
+$q$ to $p$ is
+\begin{equation}
+    D_\Omega(p\|q)
+    =\Omega(p)-\Omega(q)
+     -\langle\nabla\Omega(q),p-q\rangle.
+    \label{eq:rl-bregman-divergence}
+\end{equation}
+Convexity implies $D_\Omega(p\|q)\geq0$ and
+$D_\Omega(q\|q)=0$. In general, it is not symmetric and therefore is not a
+metric. For negative Shannon entropy, the Bregman divergence is the KL
+divergence:
+\begin{equation}
+    D_\Omega(p\|q)
+    =\sum_a p(a)\log\frac{p(a)}{q(a)}
+    =D_{\mathrm{KL}}(p\|q).
+    \label{eq:rl-bregman-kl}
+\end{equation}
+
+The proximal, mirror-descent policy update is
+\begin{equation}
+    \pi_{k+1}
+    =\operatorname*{arg\,max}_{\pi\in\Delta_{\mathcal A}}
+      \left[\langle q_k,\pi\rangle
+      -D_\Omega(\pi\|\pi_k)\right].
+    \label{eq:rl-mirror-policy-update}
+\end{equation}
+The negative action-value vector plays the role of a gradient in the usual
+minimization form of mirror descent. The Bregman term controls the change from
+the previous policy in the geometry induced by $\Omega$.
+
+For the KL case, the update can be derived explicitly. Substitute
+$D_{\mathrm{KL}}(\pi\|\pi_k)$ into \cref{eq:rl-mirror-policy-update}.
+Introducing a Lagrange multiplier for the normalization constraint
+$\sum_a\pi(a)=1$ gives the stationarity condition
+\begin{equation}
+    q_k(a)-\log\frac{\pi_{k+1}(a)}{\pi_k(a)}-1+\lambda=0.
+    \label{eq:rl-kl-mirror-stationarity}
+\end{equation}
+Solving and normalizing yields
+\begin{equation}
+    \pi_{k+1}(a)
+    =\frac{\pi_k(a)e^{q_k(a)}}
+           {\sum_b\pi_k(b)e^{q_k(b)}}.
+    \label{eq:rl-kl-mirror-update}
+\end{equation}
+The old policy is therefore reweighted by exponentiated action values. Unlike
+an independently recomputed softmax, this update retains the previous policy
+as its reference distribution.
+
+Mirror Descent Modified Policy Iteration (MD-MPI) combines this proximal
+greedy step with partial policy evaluation. Its two forms differ in the
+evaluation operator:
+\begin{equation}
+    \begin{aligned}
+        \text{Type 1:}\quad
+        &\pi_{k+1}=G_{\Omega^{\pi_k}}(v_k),\\
+        &v_{k+1}=(T_{\pi_{k+1},\Omega^{\pi_k}})^m v_k;
+    \end{aligned}
+    \qquad
+    \begin{aligned}
+        \text{Type 2:}\quad
+        &\pi_{k+1}=G_{\Omega^{\pi_k}}(v_k),\\
+        &v_{k+1}=(T_{\pi_{k+1}})^m v_k.
+    \end{aligned}
+    \label{eq:rl-mdmpi-types}
+\end{equation}
+Both types regularize the greedy step relative to the previous policy. Type 1
+also uses the corresponding regularized evaluation operator; Type 2 uses the
+ordinary evaluation operator. The distinction changes where approximation
+errors enter the iteration and consequently changes the details of the error
+analysis.
+
+The framework provides a useful unification. In the formulation discussed by
+\textcite{geist2019regularized}, Type 2 with complete policy evaluation and a
+KL divergence recovers the structure of TRPO, up to the practical distinction
+between a hard divergence constraint and a divergence penalty in the proximal
+objective. The same framework relates other algorithms to regularized
+modified policy iteration, but those algorithms are not developed further
+here because the present section is restricted to the four supplied papers.
+
+The analysis of MD-MPI introduces a cumulative regret quantity
+\begin{equation}
+    L_K=\sum_{k=1}^{K}(V^*-V^{\pi_k})
+    \label{eq:rl-mdmpi-regret}
+\end{equation}
+and the initial Bregman radius
+\begin{equation}
+    R_{\Omega}^{\pi_0}
+    =\sup_{\pi}D_\Omega(\pi\|\pi_0),
+    \label{eq:rl-mdmpi-radius}
+\end{equation}
+with the appropriate state-wise norm convention. The key telescoping term is
+\begin{equation}
+    \begin{aligned}
+    \sum_{k=0}^{K-1}
+    \bigl[D_\Omega(\pi^*\|\pi_k)
+         -D_\Omega(\pi^*\|\pi_{k+1})\bigr]
+    &=D_\Omega(\pi^*\|\pi_0)
+      -D_\Omega(\pi^*\|\pi_K)\\
+    &\leq D_\Omega(\pi^*\|\pi_0).
+    \end{aligned}
+    \label{eq:rl-bregman-telescoping}
+\end{equation}
+This is the mechanism by which the initial divergence controls the cumulative
+contribution of the proximal updates. With a uniform initial policy and KL
+divergence over a finite action set,
+\begin{equation}
+    \sup_{\pi\in\Delta_{\mathcal A}}
+    D_{\mathrm{KL}}(\pi\|\pi_0)=\log|\mathcal A|.
+    \label{eq:rl-uniform-kl-radius}
+\end{equation}
+The logarithmic dependence on the number of actions follows because the
+maximum is attained by a distribution concentrated on one action.
+
+In the exact setting, the regret bound in the MD-MPI analysis implies a bound
+of the form
+\begin{equation}
+    \frac{1}{K}\|L_K\|_\infty
+    \leq
+    \frac{1-\gamma^K}{K(1-\gamma)^2}
+       2\gamma\|V^*-v_0\|_\infty
+    +\frac{R_{\Omega}^{\pi_0}}{K}.
+    \label{eq:rl-mdmpi-exact-regret-bound}
+\end{equation}
+Approximate versions add terms for the greedy and evaluation errors propagated
+through policy transition kernels. The regret bound controls the average loss
+across iterates; it does not necessarily say that the last iterate is the best
+one. The analysis consequently gives a bound on the best policy generated so
+far through
+\begin{equation}
+    \min_{1\leq k\leq K}
+    \|V^*-V^{\pi_k}\|_{1,\rho}
+    \leq\frac{1}{K}\|L_K\|_{p,\rho},
+    \label{eq:rl-best-iterate-regret}
+\end{equation}
+for the norm and distribution conditions specified in the paper. This is why
+the best iterate can be a more appropriate output than the final iterate
+\parencite{geist2019regularized}.
+
+\subsection{Worked example and connection to autoregressive language models}
+\label{subsec:rl-worked-example-language-models}
+
+A two-action calculation makes the KL-proximal update concrete. Consider one
+state with actions $a_1$ and $a_2$, previous policy
+$\pi_k=(0.5,0.5)$, and action-value vector $q_k=(1,0)$. Under the KL mirror
+update in \cref{eq:rl-kl-mirror-update},
+\begin{equation}
+    \pi_{k+1}(a_1)
+    =\frac{0.5e^1}{0.5e^1+0.5e^0}
+    =\frac{e}{e+1}\simeq0.7311,
+    \qquad
+    \pi_{k+1}(a_2)\simeq0.2689.
+    \label{eq:rl-numerical-mirror-update}
+\end{equation}
+The policy assigns more probability to the action with the larger value, but it
+retains nonzero probability for the other action. The KL divergence from the
+updated policy to the previous uniform policy is
+\begin{equation}
+    \begin{aligned}
+    D_{\mathrm{KL}}(\pi_{k+1}\|\pi_k)
+    &\simeq0.7311\log\frac{0.7311}{0.5}
+      +0.2689\log\frac{0.2689}{0.5}\\
+    &\simeq0.1109\ \text{nats}.
+    \end{aligned}
+    \label{eq:rl-numerical-kl}
+\end{equation}
+The unit is nats because the logarithm is natural. This example illustrates the
+mechanism of the proximal update: action values shift the distribution, while
+the divergence is measured relative to the previous policy. A larger action
+value difference produces a more concentrated update; a stronger divergence
+penalty, if included as a coefficient, would make the update more conservative.
+
+For an autoregressive language model, a natural MDP representation takes the
+generated token prefix as the state and the next token as the action. If the
+current prefix is $s_t=(x_1,\ldots,x_t)$, the action is
+$a_t=x_{t+1}$, and the transition appends the selected token:
+\begin{equation}
+    s_{t+1}=s_t\mathbin{\Vert}a_t,
+    \qquad
+    \pi_\theta(a_t\mid s_t)
+    =p_\theta(x_{t+1}\mid x_1,\ldots,x_t).
+    \label{eq:rl-language-model-mdp}
+\end{equation}
+Here $\mathbin{\Vert}$ denotes sequence concatenation. If the state contains
+the complete prefix and any other context needed to determine the reward and
+transition, this representation is Markov: the next state is determined by
+the current prefix and selected token. A reward may be assigned at each token
+step or at the end of the generated sequence. With a terminal sequence reward,
+the intermediate rewards can be zero and the final transition carries the
+sequence-level outcome. The horizon is the maximum generated length or a
+stopping time determined by the generation process.
+
+This mapping is an application of the MDP definitions developed above; the
+four cited theoretical papers do not themselves establish language-model-
+specific reinforcement-learning results. Its value for the present book is
+conceptual and mathematical. It makes explicit why token generation can be
+viewed as sequential decision-making, why a sequence-level reward creates a
+delayed-credit-assignment problem, and why policy optimization changes a
+distribution over complete generated sequences rather than merely changing an
+isolated token prediction. The policy is the language model's conditional next-
+token distribution, the trajectory is a generated sequence, and the return is
+the discounted or finite-horizon accumulation of rewards associated with that
+sequence.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{\input{figures/rl_theory_language_model_mapping.tex}}
+    \caption{A natural MDP interpretation of autoregressive generation. The
+    current token prefix is the state, the next token is the action, appending
+    the token produces the next state, and a reward may be attached to a token
+    step or to the completed sequence.}
+    \label{fig:rl-language-model-mdp}
+\end{figure}
+% Alt text for accessibility register: Four boxes show a token prefix as state,
+% a next-token choice as action, a deterministic append operation as transition,
+% and a token-level or sequence-level reward.
+
+\subsection{Limitations and connection to the next topic}
+\label{subsec:rl-theory-limitations-next-topic}
+
+The results in this section rely on assumptions that must remain visible when
+they are applied to large neural policies. The contraction arguments use a
+discount factor strictly below one and bounded rewards. The finite-dimensional
+matrix derivations assume finite state and action spaces, although the
+operator formulation extends to probability kernels. Exact policy-improvement
+claims assume accurate value functions and greedy updates. Approximate methods
+replace those operations with estimates, so their guarantees depend on both
+the approximation errors and the state-distribution coefficients that
+propagate those errors.
+
+The natural-gradient construction depends on the chosen trajectory
+probability model and on the regularity of the policy parameterization. A
+singular Fisher matrix indicates redundant or locally unidentifiable parameter
+directions. TRPO's monotonic-improvement theorem uses a maximum state-wise KL
+constraint, whereas the practical algorithm uses an average KL constraint and
+sample-based estimates. Its practical stability should therefore not be
+confused with an unconditional theorem for every neural policy and sampling
+regime. Fixed regularization also changes the optimization objective, while
+Bregman regularization controls updates relative to a previous policy and
+introduces its own dependence on the initial divergence and approximation
+errors.
+
+Taken together, the four supplied papers establish a progression from exact
+dynamic programming to approximate policy iteration, from coordinate-dependent
+gradients to information-geometric updates, and from unconstrained policy
+improvement to trust-region and Bregman-regularized optimization. The common
+mathematical structure is the control of policy change under imperfect
+estimation. For language models, this structure explains how next-token
+probability distributions can be optimized against sequence-level feedback
+without treating each generated token as an independent supervised target.
+The next section can now introduce actor--critic architectures, in which a
+policy model and a value estimator are trained together to estimate the
+advantages needed for policy improvement.

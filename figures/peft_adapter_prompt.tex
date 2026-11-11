@@ -1,0 +1,27 @@
+% Original conceptual comparison; uses the standard LaTeX picture environment.
+\setlength{\unitlength}{1mm}
+\begin{picture}(150,62)
+  \put(18,55){\makebox(45,5){\textbf{Adapter-based adaptation}}}
+  \put(92,55){\makebox(45,5){\textbf{Prompt-based adaptation}}}
+
+  % Left: frozen backbone with trainable residual adapter.
+  \put(3,32){\framebox(24,12){\shortstack{Frozen\\Transformer}}}
+  \put(39,32){\framebox(24,12){\shortstack{Frozen\\Transformer}}}
+  \put(27,38){\vector(1,0){12}}
+  \put(15,32){\line(0,-1){8}}
+  \put(7,15){\framebox(16,9){\shortstack{Trainable\\adapter}}}
+  \put(15,24){\vector(0,1){8}}
+  \put(51,32){\vector(0,-1){8}}
+  \put(40,15){\framebox(22,9){\shortstack{Residual\\combination}}}
+  \put(23,19){\vector(1,0){17}}
+  \put(3,4){\makebox(62,6){\scriptsize Added module modifies hidden states}}
+
+  % Right: learned prompt vectors prepended to token embeddings.
+  \put(82,38){\framebox(20,10){\shortstack{Prompt\\vectors}}}
+  \put(108,38){\framebox(30,10){\shortstack{Token\\embeddings}}}
+  \put(102,43){\vector(1,0){6}}
+  \put(95,38){\line(0,-1){10}}
+  \put(85,17){\framebox(48,11){\shortstack{Frozen Transformer\\(attention / FFN)}}}
+  \put(109,38){\vector(0,-1){10}}
+  \put(85,8){\makebox(48,6){\scriptsize Prompt vectors are optimized}}
+\end{picture}

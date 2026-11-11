@@ -1,0 +1,1211 @@
+% ============================================================================
+% 04_scaling_law / 01_scaling_law
+% Section body for inclusion immediately after the corresponding \section
+% command in the master document. Do not compile this file independently.
+% ============================================================================
+%
+% This file intentionally contains no document-level commands, package imports,
+% \chapter, \section, or \printbibliography commands. The master document is
+% responsible for those elements.
+%
+% Figure source fragments are stored in the root-level figures/ directory.
+% References are stored in the root-level bibliography.bib file.
+%
+% ----------------------------------------------------------------------------
+% Opening transition and conceptual motivation
+% ----------------------------------------------------------------------------
+
+The preceding discussions of language-model architecture, optimization, and
+training objectives establish how an autoregressive model is parameterized and
+how its parameters are adjusted to improve next-token prediction. A further
+question follows naturally from these foundations: how should the size of the
+model, the quantity of training data, and the computational resources be
+increased as the intended system becomes larger? Answering this question
+requires more than observing that larger models often achieve lower predictive
+loss. It requires a quantitative account of how performance changes with scale,
+how the different resources interact, and how a limited computational budget
+should be allocated.
+
+Training a large language model is expensive not only because the final model
+may contain billions or trillions of parameters, but also because identifying
+a suitable configuration requires experiments with different architectures,
+training-data quantities, optimization settings, and training durations.
+Exhaustively testing every configuration at the target scale is generally
+impractical. Scaling laws address this difficulty by fitting mathematical
+relationships to observations obtained from a manageable collection of
+experiments and using those relationships to predict the behavior of larger
+systems. They therefore connect empirical machine-learning practice with
+statistical estimation, numerical optimization, and constrained resource
+allocation \parencite{Sengupta2025ScalingSurvey,Li2025MisFitting}.
+
+For autoregressive language models, the central object is usually a predictive
+loss measured on a specified data distribution. The scaling variables
+traditionally include the number of model parameters, the number of training
+tokens, and the computational expenditure required to process those tokens.
+The conventional framework is subsequently extended when inference latency,
+architectural shape, or sparse conditional computation becomes important.
+These extensions are necessary because a model that is optimal in pre-training
+FLOPs need not be optimal in memory use, inference latency, throughput, or
+deployment cost.
+
+A scaling law is an empirical predictive model, not a universal identity.
+Its coefficients and exponents depend on the model family, data distribution,
+training procedure, evaluation metric, experimental range, and fitting
+methodology. The objective of this section is to develop the foundations in a
+logical order: first defining the predictive quantity and scale variables,
+then deriving power-law and compute-optimal relationships, explaining how
+these relationships are estimated and validated, and finally examining
+inference-aware, architecture-aware, and mixture-of-experts (MoE) extensions.
+
+% ----------------------------------------------------------------------------
+% Main exposition
+% ----------------------------------------------------------------------------
+
+\subsection{Predictive loss and the fundamental scaling variables}
+\label{subsec:scaling-foundations-loss}
+
+\paragraph{Autoregressive prediction and cross-entropy.}
+An autoregressive language model factorizes the probability of a token
+sequence into conditional next-token probabilities. For a sequence
+\[
+    X=(x_1,x_2,\ldots,x_T),
+\]
+where \(T\) is the sequence length, the model with parameters
+\(\boldsymbol{\theta}\) represents
+\begin{equation}
+    p_{\boldsymbol{\theta}}(X)
+    =
+    \prod_{t=1}^{T}
+    p_{\boldsymbol{\theta}}(x_t\mid x_{<t}),
+    \label{eq:scaling-autoregressive-factorization}
+\end{equation}
+where \(x_{<t}=(x_1,\ldots,x_{t-1})\) denotes the context preceding position
+\(t\). This factorization follows from the chain rule of probability and
+reduces sequence modeling to a succession of conditional prediction problems.
+
+Let the vocabulary contain \(V\) tokens. At position \(t\), the model produces
+a probability vector
+\[
+    \mathbf{p}^{(t)}_{\boldsymbol{\theta}}
+    =
+    \left[
+    p_{\boldsymbol{\theta}}(1\mid x_{<t}),\ldots,
+    p_{\boldsymbol{\theta}}(V\mid x_{<t})
+    \right]^{\mathsf T}
+    \in\mathbb{R}^{V}.
+\]
+The target token can be represented by a one-hot vector
+\(\mathbf{y}^{(t)}\in\{0,1\}^{V}\), whose component corresponding to the
+observed token is one. The cross-entropy at this position is
+\begin{equation}
+    \ell_t(\boldsymbol{\theta})
+    =
+    -\sum_{v=1}^{V}
+    y_v^{(t)}
+    \log p_{\boldsymbol{\theta}}(v\mid x_{<t})
+    =
+    -\log p_{\boldsymbol{\theta}}(x_t\mid x_{<t}).
+    \label{eq:scaling-token-cross-entropy}
+\end{equation}
+The second equality follows from the one-hot structure of the target
+distribution.
+
+For \(D\) token-prediction targets, the empirical average negative
+log-likelihood is
+\begin{equation}
+    \widehat{\mathcal{L}}_{\mathrm{train}}
+    (\boldsymbol{\theta})
+    =
+    -\frac{1}{D}
+    \sum_{t=1}^{D}
+    \log p_{\boldsymbol{\theta}}(x_t\mid x_{<t}).
+    \label{eq:scaling-empirical-loss}
+\end{equation}
+Minimizing this quantity encourages the model to assign higher probability
+to the observed next tokens. At the population level, the corresponding
+predictive risk is an expectation over the data-generating distribution
+\(\mathcal{D}\):
+\begin{equation}
+    \mathcal{L}_{\mathcal{D}}(\boldsymbol{\theta})
+    =
+    \mathbb{E}_{X\sim\mathcal{D}}
+    \left[
+    -\frac{1}{T}
+    \sum_{t=1}^{T}
+    \log p_{\boldsymbol{\theta}}(x_t\mid x_{<t})
+    \right].
+    \label{eq:scaling-population-loss}
+\end{equation}
+The empirical training loss and the population-level risk are not
+interchangeable. Training loss is computed on observations used for
+optimization, whereas validation or test loss is computed on separate
+observations to estimate generalization. A scaling study must therefore state
+which loss is being fitted and must not silently treat training and evaluation
+measurements as equivalent.
+
+For natural-log cross-entropy, perplexity is
+\begin{equation}
+    \operatorname{PPL}
+    =
+    \exp(\mathcal{L}).
+    \label{eq:scaling-perplexity}
+\end{equation}
+Because the exponential function is strictly increasing, minimizing
+cross-entropy and minimizing perplexity induce the same ordering of models,
+although their numerical scales differ. Cross-entropy is particularly useful
+for scaling analysis because it is a continuous measure of probabilistic
+prediction. A discrete downstream metric, such as accuracy, can remain
+unchanged over a range of loss improvements and then change abruptly.
+
+This distinction matters when extrapolating pre-training behavior to
+downstream tasks. A reduction in language-model loss does not imply a fixed or
+universal increase in task accuracy. The relationship between loss and
+accuracy can vary by task, as illustrated in the downstream comparisons
+reported by \textcite{Bian2025InferenceEfficient}. Accordingly, a scaling law
+must always be interpreted as a model of the metric that was actually fitted.
+
+\paragraph{Model size.}
+Let
+\begin{equation}
+    N=|\boldsymbol{\theta}|
+    \label{eq:scaling-parameter-count}
+\end{equation}
+denote the number of trainable scalar parameters under a specified counting
+convention. Parameters are the learned numerical entries of weight matrices,
+bias vectors, embedding matrices, and other trainable tensors. In a
+decoder-only Transformer, the parameter count depends on such architectural
+quantities as hidden dimension, number of layers, attention projections, and
+feed-forward dimensions.
+
+The phrase ``number of parameters'' must be defined carefully. Some studies
+count embedding and output-projection parameters, whereas others report
+non-embedding parameters. A useful bookkeeping identity is
+\begin{equation}
+    N_{\mathrm{total}}
+    =
+    N_{\mathrm{nonembed}}+N_{\mathrm{embed}},
+    \label{eq:scaling-parameter-count-convention}
+\end{equation}
+where the exact components included in \(N_{\mathrm{embed}}\) depend on the
+study's convention. These alternatives can assign different numerical sizes
+to the same architecture and can therefore change fitted scaling coefficients
+and resource ratios. The distinction becomes even more important for sparse
+models, in which stored parameters and parameters activated for a token are
+not equal \parencite{Li2025MisFitting,Ludziejewski2025JointMoE}.
+
+\paragraph{Training-data volume.}
+Let \(D\) denote the number of training tokens processed during pre-training.
+The token count depends on the tokenizer and preprocessing pipeline; a fixed
+quantity of raw text can yield different token counts under different
+tokenization procedures. It is therefore necessary to distinguish raw corpus
+size from tokenized training volume.
+
+It is also useful to distinguish unique tokens from processed token
+exposures. If a corpus contains \(D_{\mathrm{unique}}\) tokens and is traversed
+for \(E_{\mathrm{epoch}}\) complete epochs, then, under the simplifying
+assumption that every epoch processes the entire corpus,
+\begin{equation}
+    D_{\mathrm{processed}}
+    =
+    E_{\mathrm{epoch}}D_{\mathrm{unique}}.
+    \label{eq:scaling-repeated-data}
+\end{equation}
+The processed-token count measures training exposures; it does not measure
+the quantity of unique information available to the model. Repeated exposure
+to the same observations can behave differently from adding new data.
+Moreover, datasets with equal token counts need not have equal statistical
+value: domain composition, repetition, noise, and information content can
+affect the learning outcome. Data volume is therefore a useful scale variable,
+but not a complete description of data quality
+\parencite{Sengupta2025ScalingSurvey,Li2025MisFitting}.
+
+\paragraph{Training computation.}
+Let \(C\) denote training computation, commonly approximated in floating-point
+operations (FLOPs). A FLOP is a floating-point arithmetic operation. FLOPs
+approximate arithmetic work but do not directly determine wall-clock time,
+energy use, monetary cost, or hardware utilization.
+
+For a conventional dense Transformer, a widely used approximation is
+\begin{equation}
+    C(N,D)\approx 6ND.
+    \label{eq:scaling-six-nd}
+\end{equation}
+The factor of approximately six is a conventional accounting of forward and
+backward arithmetic per parameter per processed token: roughly two operations
+per parameter for the forward computation and approximately four additional
+operations for the backward computation. Thus, the approximate training
+computation per token is \(6N\), and processing \(D\) tokens gives
+\(C\approx 6ND\).
+
+For example, a dense model with \(N=10^9\) parameters trained on
+\(D=20\times10^9\) tokens has approximate training computation
+\begin{align}
+    C
+    &\approx 6(10^9)(20\times10^9) \nonumber\\
+    &=1.2\times10^{20}\ \text{FLOPs}.
+    \label{eq:scaling-flops-example}
+\end{align}
+This estimate is an approximation, not an exact accounting of every
+implementation. Sequence-length-dependent attention computation, embedding
+operations, architectural details, and implementation-specific work can
+introduce additional terms. Long-context models are a particularly important
+case because attention-related computation can depend explicitly on context
+length \parencite{Li2025MisFitting}.
+
+The three conventional variables are therefore linked by
+\begin{equation}
+    C\approx 6ND.
+    \label{eq:scaling-resource-identity}
+\end{equation}
+Under a fixed compute budget, increasing \(N\) requires decreasing \(D\);
+increasing \(D\) requires either decreasing \(N\) or increasing \(C\). The
+central resource-allocation question is consequently not whether parameters
+or data are independently beneficial, but how they should be balanced to
+minimize predictive loss under a specified computational constraint.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/scaling_law_resource_map}
+    \caption{The conventional scaling variables and their relationship.
+    Model size \(N\) and processed training tokens \(D\) determine approximate
+    dense-model training computation \(C\approx 6ND\), while predictive loss
+    is modeled as a function of these variables.}
+    \label{fig:scaling-resource-map}
+\end{figure}
+
+\subsection{Power-law formulations and compute-optimal allocation}
+\label{subsec:scaling-power-laws}
+
+\paragraph{Univariate power laws.}
+A power law describes a relationship of the form
+\begin{equation}
+    y=ax^k,
+    \label{eq:scaling-basic-power-law}
+\end{equation}
+where \(a\) is a positive coefficient and \(k\) is a scaling exponent. When
+\(y\) is a loss that decreases with scale, a common form is
+\begin{equation}
+    L(x)=L_{\infty}+ax^{-\alpha},
+    \qquad a>0,\quad \alpha>0,
+    \label{eq:scaling-univariate-loss}
+\end{equation}
+where \(L_{\infty}\) is the asymptotic component under the assumed model and
+\(\alpha\) controls the rate at which the scale-dependent excess loss
+decreases.
+
+Differentiating with respect to \(x\) gives
+\begin{equation}
+    \frac{dL}{dx}
+    =
+    -a\alpha x^{-\alpha-1}<0,
+    \label{eq:scaling-power-first-derivative}
+\end{equation}
+so increasing \(x\) decreases the modeled loss. The second derivative is
+\begin{equation}
+    \frac{d^2L}{dx^2}
+    =
+    a\alpha(\alpha+1)x^{-\alpha-2}>0,
+    \label{eq:scaling-power-second-derivative}
+\end{equation}
+which expresses diminishing absolute improvements as scale increases.
+
+Subtracting the asymptotic term and taking logarithms yields
+\begin{equation}
+    \log(L-L_{\infty})
+    =
+    \log a-\alpha\log x.
+    \label{eq:scaling-log-linear}
+\end{equation}
+The slope in log-log coordinates is \(-\alpha\). Equivalently,
+\[
+    \frac{d\log(L-L_{\infty})}{d\log x}=-\alpha,
+\]
+so the exponent is the elasticity of excess loss with respect to scale. If
+the scale is multiplied by \(q>0\), then
+\begin{equation}
+    \frac{L(qx)-L_{\infty}}{L(x)-L_{\infty}}
+    =
+    q^{-\alpha}.
+    \label{eq:scaling-power-ratio}
+\end{equation}
+Thus, the exponent quantifies the proportional reduction in excess loss
+associated with a proportional increase in the scaling variable.
+
+\paragraph{Multivariable power laws.}
+Language-model loss depends on more than one resource. A general additive
+form is
+\begin{equation}
+    L(P_1,\ldots,P_m)
+    =
+    L_{\infty}
+    +
+    \sum_{i=1}^{m}A_iP_i^{-\alpha_i},
+    \label{eq:scaling-general-additive}
+\end{equation}
+where \(P_i\) is a scaling variable, \(A_i\) is its coefficient, and
+\(\alpha_i\) is its exponent. For model size \(N\) and training tokens \(D\),
+a conventional formulation is
+\begin{equation}
+    \boxed{
+    L(N,D)
+    =
+    E+AN^{-\alpha}+BD^{-\beta}
+    }
+    \label{eq:scaling-additive-nd}
+\end{equation}
+with positive coefficients \(A,B\), positive exponents \(\alpha,\beta\),
+and asymptotic term \(E\).
+
+The limiting cases clarify the interpretation. If model size increases
+without bound while data volume is fixed, then
+\begin{equation}
+    \lim_{N\rightarrow\infty}L(N,D)
+    =
+    E+BD^{-\beta}.
+    \label{eq:scaling-limit-model}
+\end{equation}
+The model-size contribution vanishes, but the finite-data contribution
+remains. Conversely,
+\begin{equation}
+    \lim_{D\rightarrow\infty}L(N,D)
+    =
+    E+AN^{-\alpha},
+    \label{eq:scaling-limit-data}
+\end{equation}
+and if both variables increase without bound,
+\begin{equation}
+    \lim_{\substack{N\rightarrow\infty\\D\rightarrow\infty}}
+    L(N,D)=E.
+    \label{eq:scaling-joint-limit}
+\end{equation}
+The additive form is an empirical decomposition of the modeled excess loss;
+it does not establish that these are the only possible sources of error.
+
+The additive assumption also differs from a model with explicit interaction
+terms. A more general illustrative expression is
+\begin{equation}
+    L(N,D)
+    =
+    E+AN^{-\alpha}+BD^{-\beta}
+    +GN^{-\mu}D^{-\nu},
+    \label{eq:scaling-interaction}
+\end{equation}
+where the final term represents a possible interaction. The exact functional
+form must be supported by the experimental observations and the scientific
+hypothesis. The Kaplan-style and Chinchilla-style formulations discussed in
+the scaling-law literature encode different assumptions about the interaction
+between model size and data volume; their fitted extrapolations can therefore
+differ even when both describe a finite set of observations reasonably well
+\parencite{Li2025MisFitting,Sengupta2025ScalingSurvey}.
+
+\paragraph{Compute-optimal resource allocation.}
+Once a loss function and a computational constraint are specified, the
+resource-allocation problem becomes a constrained optimization problem:
+\begin{equation}
+    \begin{aligned}
+        \min_{N,D}\quad & L(N,D)\\
+        \text{subject to}\quad & 6ND=C.
+    \end{aligned}
+    \label{eq:scaling-compute-optimization}
+\end{equation}
+Substituting \(D=C/(6N)\) into the additive loss in
+\cref{eq:scaling-additive-nd} gives
+\begin{equation}
+    L_C(N)
+    =
+    E+AN^{-\alpha}
+    +B\left(\frac{C}{6}\right)^{-\beta}N^\beta.
+    \label{eq:scaling-loss-fixed-compute}
+\end{equation}
+The second term decreases as \(N\) increases, while the third increases
+because a larger model leaves fewer tokens available under the fixed
+computational budget. The optimum balances these opposing effects.
+
+Differentiating and setting the derivative to zero gives
+\begin{align}
+    \frac{dL_C}{dN}
+    &=
+    -\alpha AN^{-\alpha-1}
+    +\beta B\left(\frac{C}{6}\right)^{-\beta}
+       N^{\beta-1}=0, \nonumber\\
+    \alpha A
+    &=
+    \beta B\left(\frac{C}{6}\right)^{-\beta}
+       N^{\alpha+\beta}, \nonumber\\
+    N^{\alpha+\beta}
+    &=
+    \frac{\alpha A}{\beta B}
+       \left(\frac{C}{6}\right)^\beta.
+    \label{eq:scaling-optimum-derivation}
+\end{align}
+Hence the compute-optimal parameter count is
+\begin{equation}
+    \boxed{
+    N^*(C)
+    =
+    \left(\frac{\alpha A}{\beta B}\right)^{
+        \frac{1}{\alpha+\beta}}
+    \left(\frac{C}{6}\right)^{
+        \frac{\beta}{\alpha+\beta}}
+    }
+    \label{eq:scaling-optimal-parameters}
+\end{equation}
+and the corresponding token count, obtained from the compute constraint, is
+\begin{equation}
+    \boxed{
+    D^*(C)
+    =
+    \left(\frac{\beta B}{\alpha A}\right)^{
+        \frac{1}{\alpha+\beta}}
+    \left(\frac{C}{6}\right)^{
+        \frac{\alpha}{\alpha+\beta}}
+    }.
+    \label{eq:scaling-optimal-tokens}
+\end{equation}
+Therefore,
+\begin{equation}
+    N^*(C)\propto C^{\frac{\beta}{\alpha+\beta}},
+    \qquad
+    D^*(C)\propto C^{\frac{\alpha}{\alpha+\beta}}.
+    \label{eq:scaling-optimal-exponents}
+\end{equation}
+The optimal allocation depends on the relative loss sensitivities encoded by
+\(\alpha\) and \(\beta\), as well as on the coefficients \(A\) and \(B\).
+
+Dividing the two optimal quantities gives the optimal token-to-parameter
+ratio:
+\begin{equation}
+    \boxed{
+    \frac{D^*(C)}{N^*(C)}
+    =
+    \left(\frac{\beta B}{\alpha A}\right)^{
+        \frac{1}{\alpha+\beta}}
+    \left(\frac{C}{6}\right)^{
+        \frac{\alpha-\beta}{\alpha+\beta}}
+    }.
+    \label{eq:scaling-optimal-ratio}
+\end{equation}
+If \(\alpha=\beta\), the ratio is independent of compute:
+\begin{equation}
+    \frac{D^*}{N^*}
+    =
+    \left(\frac{B}{A}\right)^{\frac{1}{2\alpha}},
+    \qquad
+    N^*(C)\propto C^{1/2},
+    \qquad
+    D^*(C)\propto C^{1/2}.
+    \label{eq:scaling-constant-ratio}
+\end{equation}
+If \(\alpha>\beta\), the optimal token-to-parameter ratio increases with
+compute; if \(\alpha<\beta\), it decreases. A constant ratio is therefore a
+consequence of a particular relationship between fitted exponents, not a
+universal property of language-model training.
+
+\paragraph{Kaplan-style and Chinchilla-style conclusions.}
+The scaling literature reports different empirical conclusions about how
+optimal data volume should grow with model size. The Kaplan-style relationship
+is commonly summarized as
+\begin{equation}
+    D^*\propto (N^*)^{0.74},
+    \label{eq:scaling-kaplan-ratio}
+\end{equation}
+In this relationship, parameter count increases faster than data volume.
+A later Chinchilla-style result instead reports approximately proportional
+growth:
+\begin{equation}
+    D^*\propto N^*,
+    \qquad
+    D^*\approx 20N^*
+    \label{eq:scaling-chinchilla-ratio}
+\end{equation}
+when \(N^*\) is expressed as a parameter count and \(D^*\) as a token count.
+The latter is an empirical rule of thumb associated with the studied
+conditions, not a universal prescription.
+
+The difference between these conclusions should not be reduced to a claim
+that one ratio is correct for every architecture and data regime. The
+replication and survey analysis of \textcite{Li2025MisFitting} identifies
+training hyperparameters, learning-rate schedules, parameter-counting
+conventions, FLOP calculations, checkpoint selection, and fitting procedures
+as factors that can alter the estimated relationship. The fitted optimum is
+conditional on the experimental design and on the validity of the chosen
+functional form.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/scaling_law_compute_optimal}
+    \caption{Schematic fixed-compute trade-off. Increasing parameter count
+    reduces the model-capacity contribution to loss but increases the
+    data-limitation contribution because fewer tokens can be processed.
+    Their sum has an interior minimum under the assumptions of the additive
+    scaling model.}
+    \label{fig:scaling-compute-optimal}
+\end{figure}
+
+\paragraph{IsoFLOPs analysis.}
+The compute-optimal derivation assumes that the scaling function is known.
+In practice, its coefficients and exponents must be estimated. An IsoFLOPs
+experiment fixes a computational budget \(C_i\) and evaluates several
+configurations satisfying
+\begin{equation}
+    6ND=C_i,
+    \qquad
+    D=\frac{C_i}{6N}.
+    \label{eq:scaling-isoflops}
+\end{equation}
+Each configuration is trained and its loss measured. The lowest observed
+loss along the fixed-compute profile identifies the empirical optimum for
+that budget. Repeating the experiment for several budgets yields observations
+of the form
+\[
+    \{(C_i,N_i^*,D_i^*)\}_{i=1}^{K},
+\]
+which can be used to estimate how the optimal configuration changes with
+compute.
+
+IsoFLOPs analysis directly investigates resource allocation, but it can be
+expensive because multiple configurations may need to be trained at each
+budget. Intermediate checkpoints and interpolation can reduce the number of
+full training runs, although the resulting estimates depend on the
+appropriateness of the interpolation procedure. The distinction between
+predicting loss for arbitrary configurations and estimating an optimal
+resource ratio is important: the former requires a predictive loss surface,
+whereas the latter focuses on the minimizing configuration
+\parencite{Li2025MisFitting}.
+
+\subsection{Empirical fitting and validation}
+\label{subsec:scaling-estimation}
+
+\paragraph{Experimental observations and fitting objective.}
+A scaling law is estimated from a dataset of trained and evaluated models.
+For the additive form, write
+\begin{equation}
+    \widehat{L}(N,D;\boldsymbol{\phi})
+    =
+    E+AN^{-\alpha}+BD^{-\beta},
+    \qquad
+    \boldsymbol{\phi}=(E,A,B,\alpha,\beta).
+    \label{eq:scaling-fitted-function}
+\end{equation}
+If the \(i\)-th experiment uses \((N_i,D_i)\) and produces measured loss
+\(L_i\), the fitting dataset is
+\begin{equation}
+    \mathcal{S}
+    =
+    \{(N_i,D_i,L_i)\}_{i=1}^{m}.
+    \label{eq:scaling-fitting-dataset}
+\end{equation}
+The parameter-estimation problem is
+\begin{equation}
+    \widehat{\boldsymbol{\phi}}
+    =
+    \arg\min_{\boldsymbol{\phi}}
+    \sum_{i=1}^{m}
+    \ell\!\left(
+        L_i,\widehat{L}(N_i,D_i;\boldsymbol{\phi})
+    \right),
+    \label{eq:scaling-general-fitting}
+\end{equation}
+where \(\ell\) is a chosen discrepancy function. The number and distribution
+of observations matter. If all experiments use nearly the same
+parameter-to-token ratio, it can be difficult to identify the separate
+effects of model size and data volume. A narrow range of model sizes also
+provides weak evidence for extrapolation to substantially larger models.
+
+Training conditions should be controlled or reported. Architecture, batch
+size, learning-rate schedule, optimizer, data composition, training duration,
+and evaluation procedure can all affect measured loss. In particular, a
+learning rate that is appropriate for a small model may be suboptimal for a
+larger model. If optimization quality changes systematically with model
+size, the fitted scaling law can mistakenly attribute optimization
+differences to scale itself. The survey by \textcite{Li2025MisFitting}
+emphasizes the sensitivity of scaling fits to these experimental decisions.
+
+\paragraph{Checkpoint selection and training trajectories.}
+A training run provides more than one final observation. Let
+\(\boldsymbol{\theta}_i(t)\) denote the parameters of model \(i\) after
+processing \(t\) tokens, and let
+\begin{equation}
+    L_i(t)
+    =
+    \mathcal{L}_{\mathrm{eval}}(\boldsymbol{\theta}_i(t))
+    \label{eq:scaling-learning-trajectory}
+\end{equation}
+denote its evaluated loss. Intermediate checkpoints can provide observations
+at different training durations and can be useful when constructing
+fixed-compute profiles. Interpolation between checkpoints can estimate a
+loss at an intermediate token count, but this introduces assumptions about
+the smoothness of the learning trajectory. The choice between final
+checkpoints, multiple checkpoints, smoothed trajectories, and interpolated
+observations can affect the fitted law \parencite{Li2025MisFitting}.
+
+\paragraph{Least-squares and robust objectives.}
+A common fitting objective is mean squared error:
+\begin{equation}
+    J_{\mathrm{MSE}}(\boldsymbol{\phi})
+    =
+    \frac{1}{m}
+    \sum_{i=1}^{m}
+    \left[
+        L_i-\widehat{L}(N_i,D_i;\boldsymbol{\phi})
+    \right]^2.
+    \label{eq:scaling-mse}
+\end{equation}
+Squaring residuals prevents positive and negative errors from cancelling and
+penalizes large residuals more heavily. Mean absolute error is
+\begin{equation}
+    J_{\mathrm{MAE}}(\boldsymbol{\phi})
+    =
+    \frac{1}{m}
+    \sum_{i=1}^{m}
+    \left|
+        L_i-\widehat{L}(N_i,D_i;\boldsymbol{\phi})
+    \right|.
+    \label{eq:scaling-mae}
+\end{equation}
+Its linear penalty makes it less sensitive than MSE to individual large
+residuals.
+
+The Huber loss combines quadratic and linear behavior. For residual \(r\)
+and threshold \(\delta>0\),
+\begin{equation}
+    \ell_{\delta}(r)
+    =
+    \begin{cases}
+        \frac{1}{2}r^2,
+            & |r|\leq\delta,\\[4pt]
+        \delta\left(|r|-\frac{\delta}{2}\right),
+            & |r|>\delta.
+    \end{cases}
+    \label{eq:scaling-huber}
+\end{equation}
+For small residuals it behaves quadratically, while for large residuals it
+grows linearly. The threshold \(\delta\) determines the transition. The
+scaling-law literature uses variants of MAE, MSE, Huber loss, and custom
+objectives; the selected objective should be reported because it changes
+the relative influence of observations \parencite{Li2025MisFitting}.
+
+\paragraph{Nonlinear numerical optimization.}
+The exponents in a power law are unknown parameters, so fitting is generally
+a nonlinear optimization problem. BFGS is a quasi-Newton method that uses
+gradient information and an approximation to the Hessian. A Newton-type
+update is
+\begin{equation}
+    \boldsymbol{\phi}_{k+1}
+    =
+    \boldsymbol{\phi}_{k}
+    -
+    H_k^{-1}\nabla J(\boldsymbol{\phi}_k),
+    \label{eq:scaling-newton-update}
+\end{equation}
+where \(H_k\) is the Hessian or its approximation. BFGS updates an
+approximation to curvature information from successive parameter and
+gradient changes. L-BFGS stores only a limited history of these changes,
+reducing memory requirements. These methods are used in the scaling-law
+literature, including in fitting procedures surveyed by
+\textcite{Li2025MisFitting}.
+
+Levenberg--Marquardt is another method for nonlinear least-squares
+optimization. If \(\mathbf{r}_k\) is the residual vector and \(J_k\) is its
+Jacobian with respect to the fitted parameters, a damped update is
+\begin{equation}
+    \boldsymbol{\phi}_{k+1}
+    =
+    \boldsymbol{\phi}_{k}
+    -
+    \left(J_k^{\mathsf T}J_k+\lambda I\right)^{-1}
+    J_k^{\mathsf T}\mathbf{r}_k,
+    \label{eq:scaling-levenberg-marquardt}
+\end{equation}
+where \(\lambda>0\) is a damping parameter and \(I\) is the identity matrix.
+Larger damping makes the update more gradient-like, whereas smaller damping
+approaches a Gauss--Newton step. Levenberg--Marquardt is used in the
+architecture-related scaling analyses of \textcite{Bian2025InferenceEfficient}
+and \textcite{Bian2026ArchitectureScaling}.
+
+Initialization is consequential because nonlinear objectives can contain
+flat regions, poorly conditioned directions, or multiple local minima.
+Grid search, random initializations, and initial values informed by prior
+fits are alternative strategies. The replication analysis in
+\textcite{Li2025MisFitting} shows that initialization can materially affect
+the fitted result. An optimization report should therefore state the
+algorithm, objective, initialization, parameter constraints, stopping
+criterion, and any model or observation exclusions.
+
+\paragraph{Logarithmic transformations.}
+The simple power law \(y=ax^{-\alpha}\) can be linearized as
+\begin{equation}
+    \log y=\log a-\alpha\log x.
+    \label{eq:scaling-log-linear-simple}
+\end{equation}
+For a loss with an asymptotic term, the corresponding transformation is
+\[
+    \log(L-E)=\log a-\alpha\log x,
+\]
+so the asymptotic term must be accounted for. More importantly, minimizing
+squared error in the original loss space is not equivalent to minimizing
+squared error after a logarithmic transformation:
+\begin{equation}
+    \sum_i(L_i-\widehat{L}_i)^2
+    \neq
+    \sum_i(\log L_i-\log\widehat{L}_i)^2.
+    \label{eq:scaling-log-objective-difference}
+\end{equation}
+The transformation changes the error weighting and can give greater
+relative influence to errors at smaller loss values. Linearization may be
+computationally convenient, but it changes the statistical objective and
+should not be assumed to be neutral \parencite{Li2025MisFitting}.
+
+\paragraph{Validation and predictive reliability.}
+A function that fits the observations used for estimation is not necessarily
+reliable outside that dataset. Residuals are
+\begin{equation}
+    r_i=L_i-\widehat{L}(N_i,D_i;\widehat{\boldsymbol{\phi}}).
+    \label{eq:scaling-residuals}
+\end{equation}
+Systematic residual patterns can indicate that the assumed functional form
+omits an important variable or interaction. The mean squared error and
+coefficient of determination are
+\begin{align}
+    \operatorname{MSE}
+    &=
+    \frac{1}{m}\sum_{i=1}^{m}r_i^2,
+    \label{eq:scaling-validation-mse}\\
+    R^2
+    &=
+    1-
+    \frac{\sum_{i=1}^{m}(L_i-\widehat{L}_i)^2}
+         {\sum_{i=1}^{m}(L_i-\overline{L})^2},
+    \qquad
+    \overline{L}=\frac{1}{m}\sum_{i=1}^{m}L_i.
+    \label{eq:scaling-r-squared}
+\end{align}
+The \(R^2\) statistic compares squared prediction error with a baseline that
+predicts the sample mean. A high value does not, by itself, establish
+accurate extrapolation.
+
+When the objective is to rank candidate architectures, rank agreement can
+also matter. For untied ranks \(R_i\) and \(S_i\), Spearman's rank
+correlation is
+\begin{equation}
+    r_s
+    =
+    1-
+    \frac{6\sum_{i=1}^{m}(R_i-S_i)^2}
+         {m(m^2-1)}.
+    \label{eq:scaling-spearman}
+\end{equation}
+A value close to one indicates strong agreement between the two rankings.
+The inference- and architecture-aware studies use measures including MSE,
+\(R^2\), relative prediction error, and Spearman correlation
+\parencite{Bian2025InferenceEfficient,Bian2026ArchitectureScaling}.
+
+Confidence intervals, goodness-of-fit measures, and out-of-sample evaluation
+provide complementary evidence. A particularly informative extrapolation
+test fits a law on smaller models and evaluates its predictions on larger
+models not used during fitting. Successful extrapolation over a finite range
+is useful evidence, but it does not prove validity at arbitrary scales.
+
+\paragraph{Reproducibility.}
+The survey by \textcite{Li2025MisFitting} examines 51 scaling-law studies,
+of which 45 quantify scaling trends using power laws. The survey reports
+substantial omissions in the description of training, equation variables,
+evaluation, fitting procedures, optimization, parameter counting, and FLOP
+accounting. It also reports limited availability of analysis code,
+checkpoints, and metric scores. These observations show that a compact
+equation is not a complete scientific result: the experimental and numerical
+pipeline that produced its coefficients must also be documented.
+
+A reproducible scaling study should specify the functional form, definitions
+of all variables, parameter-counting convention, FLOP calculation, model
+architecture, training data, optimizer, batch size, learning-rate schedule,
+checkpoint selection, evaluation metric, fitting objective, optimization
+algorithm, initialization strategy, parameter constraints, and validation
+procedure. Without these details, independently fitting an equation of the
+same nominal form need not reproduce the original conclusion.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/scaling_law_isoflops}
+    \caption{Schematic IsoFLOPs analysis. Each curve represents configurations
+    with the same approximate training-compute budget. The minimum-loss
+    configuration on each curve defines an empirical compute-optimal point.}
+    \label{fig:scaling-isoflops}
+\end{figure}
+
+\subsection{Inference-efficient and architecture-aware scaling}
+\label{subsec:scaling-inference-architecture}
+
+\paragraph{Training optimality versus deployment optimality.}
+The conventional framework minimizes pre-training loss under a training
+compute constraint. Deployment introduces additional objectives, including
+inference latency, throughput, and memory use. A model that is optimal in
+training FLOPs need not be optimal for autoregressive generation.
+
+Parameter count alone does not determine inference latency. In a
+decoder-only Transformer, successive layers are executed sequentially during
+generation. The number of layers therefore contributes to the sequential
+depth of the computation, while hidden dimension affects projection sizes,
+matrix multiplication shapes, and memory access. Models with similar
+parameter counts can consequently exhibit different inference behavior.
+The measurements reported by \textcite{Bian2025InferenceEfficient} show
+substantial latency differences between models of comparable size and
+illustrate the importance of model shape.
+
+\paragraph{Inference-constrained scaling.}
+An inference-aware optimization can be expressed as
+\begin{equation}
+    \begin{aligned}
+        \min_{N,D}\quad & L(N,D)\\
+        \text{subject to}\quad
+        &N\leq N_C,\\
+        &D\leq D_C,\\
+        &T_{\mathrm{inf}}\leq T_C,
+    \end{aligned}
+    \label{eq:scaling-inference-constrained}
+\end{equation}
+where \(N_C\) and \(D_C\) are the available model-size and training-data
+budgets, and \(T_C\) is the maximum permitted inference latency. The
+latency \(T_{\mathrm{inf}}\) must be measured or modeled under a specified
+hardware, batch-size, sequence-length, and decoding configuration; it is
+not a universal property of parameter count alone.
+
+\textcite{Bian2025InferenceEfficient} introduce the aspect ratio
+\begin{equation}
+    R=\frac{d_{\mathrm{model}}}{n_{\mathrm{layers}}},
+    \label{eq:scaling-aspect-ratio}
+\end{equation}
+where \(d_{\mathrm{model}}\) is the hidden dimension and
+\(n_{\mathrm{layers}}\) is the number of Transformer layers. Their
+inference-efficient loss formulation is
+\begin{equation}
+    \boxed{
+    L(N,D,R)
+    =
+    \left(E+AN^{-\alpha}+BD^{-\beta}\right)
+    \left(1+\epsilon R^\gamma\right)
+    }
+    \label{eq:scaling-inference-efficient-law}
+\end{equation}
+where \(\epsilon\) and \(\gamma\), together with the conventional scaling
+coefficients, are estimated from observations. The first factor represents
+the conventional size-and-data relationship, while the second introduces
+an aspect-ratio-dependent adjustment.
+
+The authors train 63 models across different parameter counts, data budgets,
+and architectural configurations. Their experiments report that models with
+similar parameter counts can have different inference latencies and that
+wider, shallower configurations can offer throughput advantages under the
+studied settings. They use the fitted relationship together with latency
+measurements to select candidate architectures. Their reported Morph-1B
+result demonstrates an inference-latency improvement relative to comparable
+open-source models under the paper's evaluation conditions. These findings
+support the broader principle that model selection should account for
+deployment constraints rather than optimizing pre-training loss in isolation
+\parencite{Bian2025InferenceEfficient}.
+
+\paragraph{Conditional architecture-aware scaling.}
+Architecture is not merely a fixed background condition. Hidden dimension,
+layer count, and the allocation of parameters between attention and
+feed-forward networks are also optimization variables. In a decoder-only
+Transformer, let
+\begin{equation}
+    r_{\mathrm{MLP/attn}}
+    =
+    \frac{N_{\mathrm{MLP}}}{N_{\mathrm{attn}}}
+    \label{eq:scaling-mlp-attention-ratio}
+\end{equation}
+denote the ratio of feed-forward parameters to attention parameters.
+Grouped-query attention (GQA) changes the relationship between query heads
+and key-value heads and can therefore affect key-value-cache memory and
+inference throughput.
+
+The architecture-aware study of \textcite{Bian2026ArchitectureScaling}
+reports approximately U-shaped relationships between predictive loss and
+normalized hidden dimension, and between loss and the MLP-to-attention
+ratio. This behavior differs from a monotonically decreasing power law:
+under a fixed parameter budget, an architectural variable can have an
+interior optimum. The paper uses a representative calibration form
+\begin{equation}
+    f(x)=c_0+c_1\log x+\frac{c_2}{x},
+    \label{eq:scaling-architecture-u-shape}
+\end{equation}
+where \(x>0\). Its derivative is
+\[
+    f'(x)=\frac{c_1}{x}-\frac{c_2}{x^2}.
+\]
+For positive \(c_1,c_2\), the stationary point is
+\begin{equation}
+    x^*=\frac{c_2}{c_1},
+    \qquad
+    f''(x^*)=\frac{c_1^3}{c_2^2}>0,
+    \label{eq:scaling-architecture-minimum}
+\end{equation}
+so it is a local minimum.
+
+The normalized hidden dimension is defined in the study as
+\begin{equation}
+    x_d=
+    \frac{d_{\mathrm{model}}}
+         {\sqrt{N_{\mathrm{nonembed}}}},
+    \label{eq:scaling-normalized-hidden-dimension}
+\end{equation}
+where \(N_{\mathrm{nonembed}}\) is the non-embedding parameter count. Let
+\(r=r_{\mathrm{MLP/attn}}\). The conditional calibration is represented as
+\begin{align}
+    L(x_d,r\mid N,D)
+    ={}&
+    \left(a_0+a_1\log x_d+\frac{a_2}{x_d}\right)
+    \nonumber\\
+    &\times
+    \left(b_0+b_1\log r+\frac{b_2}{r}\right)
+    L_{\mathrm{opt}}(N,D),
+    \label{eq:scaling-conditional-architecture-law}
+\end{align}
+where
+\begin{equation}
+    L_{\mathrm{opt}}(N,D)
+    =
+    E+AN^{-\alpha}+BD^{-\beta}.
+    \label{eq:scaling-architecture-reference-loss}
+\end{equation}
+The coefficients are fitted to experimental observations. The multiplicative
+form assumes that the two architectural calibration factors can be separated;
+it is a modeling choice rather than a general property of Transformer
+architectures.
+
+Architecture selection can then be written as an efficiency optimization
+subject to a loss constraint:
+\begin{equation}
+    \begin{aligned}
+        \max_{\mathcal{P}}\quad & I_N(\mathcal{P})\\
+        \text{subject to}\quad
+        &L(\mathcal{P}\mid N,D)\leq L_t,
+    \end{aligned}
+    \label{eq:scaling-architecture-optimization}
+\end{equation}
+where \(\mathcal{P}\) denotes an architectural configuration,
+\(I_N(\mathcal{P})\) is its inference-efficiency measure, and \(L_t\) is
+the maximum acceptable loss. GQA can be treated as a discrete architectural
+choice and searched over feasible configurations rather than forced into
+the same continuous calibration function.
+
+The study trains more than 200 models, spanning approximately 80 million
+to 3 billion non-embedding parameters and training-data budgets from
+8 billion to 100 billion tokens. It reports up to 42\% greater inference
+throughput and 2.1\% higher average downstream accuracy than its specified
+LLaMA-3.2 baselines under the reported conditions. The authors also show
+that using models closer to the target scale can improve prediction accuracy.
+These results reinforce that the scale range used for fitting remains
+important even when architecture is explicitly modeled
+\parencite{Bian2026ArchitectureScaling}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/scaling_law_architecture}
+    \caption{Schematic architecture-aware scaling. At a fixed parameter
+    budget, different allocations between depth and width can have different
+    inference costs and predictive losses; an architecture-aware objective
+    searches for efficient configurations subject to a loss constraint.}
+    \label{fig:scaling-architecture}
+\end{figure}
+
+\subsection{Joint scaling for mixture-of-experts models}
+\label{subsec:scaling-moe}
+
+\paragraph{Stored parameters and active parameters.}
+In a dense Transformer, the same feed-forward parameters are applied to each
+token. A mixture-of-experts model replaces a dense feed-forward component
+with multiple expert networks and a routing mechanism. The router selects
+which expert or experts process a token. In the top-one routing configuration
+considered in the Switch-style setting, a token is routed to one expert.
+
+Let \(N_{\mathrm{total}}\) be the total number of stored parameters and
+\(N_{\mathrm{act}}\) the number of parameters activated for a token. For a
+dense model, these quantities are approximately equal under a consistent
+counting convention. For an MoE model,
+\begin{equation}
+    N_{\mathrm{act}}<N_{\mathrm{total}},
+    \label{eq:scaling-moe-active-total}
+\end{equation}
+because only a subset of expert parameters participates in a token's
+computation. Active parameters are relevant to arithmetic work per token,
+whereas total parameters are important for weight storage. The number of
+experts, denoted by \(E\), is an additional architectural variable.
+
+\paragraph{Joint MoE scaling law.}
+\textcite{Ludziejewski2025JointMoE} extend the Chinchilla-style relationship
+to include active parameters, training tokens, and the number of experts.
+Their joint formulation is
+\begin{align}
+    L(N_{\mathrm{act}},D,\widehat{E})
+    ={}&
+    a\widehat{E}^{\delta}
+    N_{\mathrm{act}}^{\alpha+\gamma\ln(\widehat{E})}
+    \nonumber\\
+    &+
+    b\widehat{E}^{\omega}
+    D^{\beta+\zeta\ln(\widehat{E})}
+    +c,
+    \label{eq:scaling-joint-moe}
+\end{align}
+where \(\widehat{E}\) is the transformed expert-count variable defined by
+the study, and \(a,b,c,\delta,\alpha,\beta,\gamma,\omega,\zeta\) are fitted
+parameters. The effective exponents are
+\begin{equation}
+    \mu(E)=\alpha+\gamma\ln(\widehat{E}),
+    \qquad
+    \nu(E)=\beta+\zeta\ln(\widehat{E}).
+    \label{eq:scaling-moe-effective-exponents}
+\end{equation}
+Thus, the influence of active parameters and data volume can change with
+the expert count. For a fixed expert configuration, the expression retains
+a Chinchilla-style dependence on active parameters and training tokens.
+
+The transformation \(\widehat{E}\) is part of the authors' specified
+functional form and should be implemented according to their definition;
+it should not be replaced by an assumed transformation when reproducing
+their fit. The formulation is empirical and its coefficients and exponents
+must be estimated from observations.
+
+\paragraph{Compute- and memory-constrained MoE scaling.}
+Under the conventional approximation used for the studied sparse models,
+training computation is expressed using active parameters:
+\begin{equation}
+    F_{\mathrm{train}}
+    \approx 6N_{\mathrm{act}}D.
+    \label{eq:scaling-moe-flops}
+\end{equation}
+The compute-optimal problem is therefore
+\begin{equation}
+    \begin{aligned}
+        \min_{N_{\mathrm{act}},D,E}\quad
+        &L(N_{\mathrm{act}},D,E)\\
+        \text{subject to}\quad
+        &6N_{\mathrm{act}}D=F,
+    \end{aligned}
+    \label{eq:scaling-moe-compute-opt}
+\end{equation}
+where \(F\) is the available training-compute budget. Unlike the dense
+formulation, the expert count now influences the optimal balance between
+active parameters and tokens.
+
+The results reported by \textcite{Ludziejewski2025JointMoE} show that, for
+the studied settings and fixed training-compute budget, increasing the
+number of experts leads to an optimum with fewer active parameters and more
+training tokens. Their reported configurations for a budget of
+\(10^{20}\) FLOPs are shown in \cref{tab:scaling-moe-configurations}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Reported compute-optimal MoE configurations at a training
+    budget of \(10^{20}\) FLOPs. Values are reproduced from the results
+    reported by \textcite{Ludziejewski2025JointMoE}.}
+    \label{tab:scaling-moe-configurations}
+    \begin{tabularx}{\textwidth}{c>{\centering\arraybackslash}X>{\centering\arraybackslash}X}
+        \toprule
+        Number of experts & \shortstack{Optimal active\\parameters} & \shortstack{Optimal training\\tokens}\\
+        \midrule
+        1  & 1.7B  & 9.7B\\
+        2  & 1.5B  & 11.4B\\
+        4  & 1.2B  & 13.9B\\
+        8  & 990M  & 17B\\
+        16 & 810M  & 20.7B\\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+The optimal ratio of tokens to active parameters changes with expert
+count. A single fixed ratio cannot describe every MoE configuration.
+
+Training compute is not the only constraint. The total parameter count
+determines weight-storage requirements, and autoregressive inference also
+requires memory for the key-value cache. For a decoder with \(N_{\mathrm{blocks}}\)
+blocks, hidden dimension \(d_{\mathrm{model}}\), and \(T\) cached tokens, a
+simplified cache-element count is proportional to
+\begin{equation}
+    M_{\mathrm{KV}}
+    \propto
+    2T N_{\mathrm{blocks}}d_{\mathrm{model}},
+    \label{eq:scaling-moe-kv-cache}
+\end{equation}
+where the factor of two accounts for keys and values. The exact memory in
+bytes additionally depends on batch size, the number of key-value heads,
+storage precision, and implementation details. Under a simplified
+parameter-equivalent accounting, the combined constraint can be represented
+as
+\begin{equation}
+    N_{\mathrm{total}}
+    +
+    2T N_{\mathrm{blocks}}d_{\mathrm{model}}
+    \leq M,
+    \label{eq:scaling-moe-memory}
+\end{equation}
+where \(M\) is the corresponding memory budget. This expression is a
+simplified representation of the weight and cache requirements, not a
+hardware-independent byte-accurate memory model.
+
+The MoE analysis therefore distinguishes three quantities that must not be
+collapsed into one: total stored parameters, active parameters per token,
+and memory required by the key-value cache. The study argues that MoE models
+can be memory-efficient under the investigated constraints even though
+their total parameter count is larger than that of a corresponding dense
+model. This conclusion depends on the studied expert configurations and
+accounting assumptions; FLOPs alone do not capture all communication,
+memory-access, or hardware execution costs
+\parencite{Ludziejewski2025JointMoE}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/scaling_law_moe}
+    \caption{Schematic distinction between dense and mixture-of-experts
+    parameter accounting. A dense model activates its shared parameters for
+    each token, whereas an MoE model stores multiple experts and activates
+    only a selected subset for a token.}
+    \label{fig:scaling-moe}
+\end{figure}
+
+\subsection{Limitations, synthesis, and transition}
+\label{subsec:scaling-limitations-transition}
+
+The scaling relationships developed in this section provide a quantitative
+framework for reasoning about model size, training data, computational
+expenditure, inference efficiency, and architectural allocation. Their
+predictive validity is nevertheless conditional. A scaling law fitted for
+one architecture should not automatically be transferred to another
+architecture, because equal parameter counts can correspond to different
+hidden dimensions, layer counts, attention configurations, and allocations
+between attention and feed-forward components. The same caution applies to
+data: equal token counts do not imply equal information content, domain
+coverage, noise, or repetition.
+
+Extrapolation is another fundamental limitation. A power law fitted over a
+restricted range can fail when the system enters a different computational
+or statistical regime. Piecewise or broken-scaling formulations have been
+proposed to represent changes in scaling behavior, but such extensions
+require evidence for a transition and additional parameters to estimate.
+Likewise, predictive loss does not uniquely determine downstream accuracy.
+The mapping from pre-training loss to task performance can differ across
+tasks, and downstream evaluation remains necessary when task performance
+is the actual objective \parencite{Sengupta2025ScalingSurvey,
+Bian2025InferenceEfficient}.
+
+The conventional dense-model formulation begins with
+\(L(N,D)=E+AN^{-\alpha}+BD^{-\beta}\) and the approximate computational
+constraint \(C\approx6ND\). Their combination yields compute-optimal
+parameter and token allocations. Empirical estimation then requires a
+carefully designed collection of training runs, explicit definitions of
+variables, numerical fitting, and validation beyond the observations used
+for optimization. Inference-aware and architecture-aware formulations add
+latency and architectural variables, while MoE scaling distinguishes stored
+parameters from active parameters and introduces memory constraints.
+
+The unifying principle is that scale is multidimensional. Increasing one
+resource changes the value and cost of the others, and the best configuration
+depends on the objective being optimized. Scaling laws are useful precisely
+because they turn these interactions into testable and predictive
+relationships, but their conclusions remain tied to their assumptions,
+measurements, and experimental domains. This foundation prepares the
+subsequent discussion of how training objectives, optimization procedures,
+and architectural choices interact in the construction of increasingly
+capable language models.

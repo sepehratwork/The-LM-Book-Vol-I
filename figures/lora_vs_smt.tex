@@ -1,0 +1,32 @@
+% Original conceptual comparison; uses the standard LaTeX picture environment.
+\setlength{\unitlength}{1mm}
+\begin{picture}(150,58)
+  \put(18,52){\makebox(48,5){\textbf{LoRA: low-rank update}}}
+  \put(92,52){\makebox(48,5){\textbf{SMT: selected blocks}}}
+
+  % LoRA panel.
+  \put(3,31){\framebox(22,11){\shortstack{Frozen\\$\mathbf{W}_0$}}}
+  \put(31,42){\framebox(17,8){\scriptsize Trainable $\mathbf{A}$}}
+  \put(31,25){\framebox(17,8){\scriptsize Trainable $\mathbf{B}$}}
+  \put(48,46){\vector(1,0){7}}
+  \put(48,29){\vector(1,0){7}}
+  \put(55,34){\framebox(16,11){\shortstack{Low-rank\\$\mathbf{B}\mathbf{A}$}}}
+  \put(25,36){\vector(1,0){6}}
+  \put(71,39){\vector(1,0){4}}
+  \put(3,10){\makebox(68,8){\shortstack{Update rank is at most $r$;\\factors add forward computation.}}}
+
+  % SMT panel.
+  \put(92,30){\framebox(36,16){}}
+  \put(92,34){\line(1,0){36}}
+  \put(92,38){\line(1,0){36}}
+  \put(92,42){\line(1,0){36}}
+  \put(101,30){\line(0,1){16}}
+  \put(110,30){\line(0,1){16}}
+  \put(119,30){\line(0,1){16}}
+  \put(94,40){\makebox(6,3){\rule{3mm}{2mm}}}
+  \put(112,36){\makebox(6,3){\rule{3mm}{2mm}}}
+  \put(121,32){\makebox(6,3){\rule{3mm}{2mm}}}
+  \put(92,47){\makebox(36,4){\scriptsize Partitioned base matrix $\mathbf{W}_0$}}
+  \put(110,30){\vector(0,-1){6}}
+  \put(88,14){\makebox(45,8){\shortstack{Selected blocks are trainable;\\unselected blocks remain frozen.}}}
+\end{picture}

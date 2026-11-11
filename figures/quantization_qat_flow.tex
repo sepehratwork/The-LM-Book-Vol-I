@@ -1,0 +1,24 @@
+% Figure source fragment: simplified quantization-aware training loop.
+% This file is inserted inside a figure environment using \input.
+\begin{center}
+\setlength{\fboxsep}{6pt}
+\begin{tabular}{c}
+    \fbox{\parbox[c][0.82cm][c]{0.60\textwidth}{\centering
+        \textbf{Full-precision master weights}\\
+        \(\mathbf{W}_t\)}}\\[0.25em]
+    \(\downarrow\;\text{fake quantization }Q(\cdot)\)\\[0.2em]
+    \fbox{\parbox[c][0.82cm][c]{0.60\textwidth}{\centering
+        \textbf{Quantized forward proxy}\\
+        \(\widehat{\mathbf{W}}_t=Q(\mathbf{W}_t)\)}}\\[0.25em]
+    \(\downarrow\;\text{forward computation with quantized proxies}\)\\[0.2em]
+    \fbox{\parbox[c][0.82cm][c]{0.60\textwidth}{\centering
+        \textbf{Loss evaluation}\\
+        \(\mathcal{L}(\widehat{\mathbf{W}}_t,\widehat{\mathbf{x}})\)}}\\[0.25em]
+    \(\downarrow\;\text{backpropagation with a surrogate gradient}\)\\[0.2em]
+    \fbox{\parbox[c][0.82cm][c]{0.60\textwidth}{\centering
+        \textbf{Optimizer update}\\
+        \(\mathbf{W}_{t+1}=\mathbf{W}_t-\eta\widetilde{\nabla}_{\mathbf{W}}\mathcal{L}\)}}\\[0.25em]
+    \(\downarrow\;\text{repeat the next training step}\)\\[0.2em]
+    \(\boxed{\text{Updated master weights}}\)
+\end{tabular}
+\end{center}

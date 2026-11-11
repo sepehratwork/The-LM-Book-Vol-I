@@ -1,0 +1,29 @@
+% Figure source for 02_actor_critics.tex.
+% Uses the standard LaTeX picture environment and requires no additional
+% drawing package. Include this file with \input from the project root.
+\setlength{\unitlength}{1mm}
+\begin{picture}(155,80)
+    % Main policy-generation path.
+    \put(0,51){\framebox(28,14){\shortstack{State\\\(s_t=(x,y_{<t})\)}}}
+    \put(42,51){\framebox(30,14){\shortstack{Actor\\\(\pi_\theta\)}}}
+    \put(87,51){\framebox(20,14){\shortstack{Token\\\(y_t\)}}}
+    \put(120,51){\framebox(28,14){\shortstack{Reward\\\(r_t\)}}}
+    \put(28,58){\vector(1,0){14}}
+    \put(72,58){\vector(1,0){15}}
+    \put(107,58){\vector(1,0){13}}
+
+    % Value-estimation and advantage path.
+    \put(42,20){\framebox(30,14){\shortstack{Critic\\\(V_\phi(s_t)\)}}}
+    \put(87,20){\framebox(28,14){\shortstack{Advantage\\\(\widehat A_t\)}}}
+    \put(120,20){\framebox(32,14){\shortstack{Actor update\\\(\theta\leftarrow\theta'\)}}}
+    \put(28,51){\vector(1,-1){18}}
+    \put(72,27){\vector(1,0){15}}
+    \put(120,51){\vector(-1,-1){17}}
+    \put(115,27){\vector(1,0){5}}
+
+    % Feedback from the policy update to the actor.
+    \put(152,27){\line(1,0){1}}
+    \put(153,27){\line(0,1){48}}
+    \put(57,75){\line(1,0){96}}
+    \put(57,75){\vector(0,-1){10}}
+\end{picture}

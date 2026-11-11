@@ -1,0 +1,1219 @@
+% ============================================================================
+% 02_architecture | 05_normalization
+% Section-body file: include immediately after the relevant \section command
+% in the master tstextbook.tex file.
+%
+% This file intentionally contains no document class, package imports,
+% \chapter, \section, or bibliography command. Figure source fragments are
+% stored in the root-level figures directory and inserted with \input.
+% ============================================================================
+
+The preceding discussion established how feed-forward transformations and
+activation functions modify the feature representation of each token. These
+operations are repeatedly composed with attention sublayers throughout a
+Transformer. Their repeated application raises a further architectural
+question: how should the numerical scale of the intermediate representations
+be controlled as information passes through a deep sequence of transformations?
+Normalization addresses this question by transforming activations according
+to statistical quantities calculated from selected dimensions of the
+representation. Its position within Transformer blocks, its mathematical
+properties, and its alternatives are therefore necessary parts of the
+architecture before the attention mechanism is considered in full.
+
+\subsection{Architectural motivation and statistical foundations}
+\label{subsec:norm-motivation-statistics}
+
+A neural network transforms its input through a sequence of parameterized
+operations. In a Transformer, the representations passed between these
+operations are vectors associated with individual tokens. Each vector contains
+features that encode information accumulated by the model at a particular
+stage of computation. The numerical values of these features are called
+activations. Their magnitudes and distributions affect the inputs received by
+subsequent transformations and the derivatives through which the parameters
+are optimized.
+
+Consider a batch of token sequences represented by the activation tensor
+\begin{equation}
+    \mathbf{X}\in\mathbb{R}^{B\times T\times C},
+    \label{eq:norm-input-tensor}
+\end{equation}
+where \(B\) denotes the batch size, \(T\) the number of token positions in
+each sequence, and \(C\) the hidden or embedding dimension. The scalar
+activation \(x_{ijk}\) is the value for sample \(i\), token position \(j\),
+and feature channel \(k\). The representation of one token is therefore
+\begin{equation}
+    \mathbf{x}_{ij}
+    =
+    \begin{bmatrix}
+        x_{ij1} & x_{ij2} & \cdots & x_{ijC}
+    \end{bmatrix}^{\mathsf T}
+    \in\mathbb{R}^{C}.
+    \label{eq:norm-token-vector}
+\end{equation}
+The normalization methods most relevant to Transformers calculate their
+statistics over the feature dimension of this token vector. The batch and
+sequence dimensions are retained, but they do not determine the statistics
+used to normalize a particular token.
+
+The statistical quantities used in normalization can be introduced for a
+generic vector
+\(\mathbf{x}=[x_1,\ldots,x_C]^{\mathsf T}\in\mathbb{R}^{C}\).
+Its arithmetic mean is
+\begin{equation}
+    \mu
+    =
+    \frac{1}{C}\sum_{k=1}^{C}x_k.
+    \label{eq:norm-mean}
+\end{equation}
+The mean measures the central location of the feature values. Subtracting
+this value from every component gives the centered vector
+\begin{equation}
+    \widetilde{x}_k=x_k-\mu.
+    \label{eq:norm-centered-value}
+\end{equation}
+The population variance across the \(C\) features is
+\begin{equation}
+    \sigma^2
+    =
+    \frac{1}{C}\sum_{k=1}^{C}(x_k-\mu)^2,
+    \label{eq:norm-variance}
+\end{equation}
+and the standard deviation is its nonnegative square root,
+\begin{equation}
+    \sigma=\sqrt{\sigma^2}.
+    \label{eq:norm-standard-deviation}
+\end{equation}
+The factor \(1/C\), rather than \(1/(C-1)\), is used because the features
+constitute the complete set over which the normalization statistics are
+calculated; the expression is not an estimate of a population variance from
+a separate statistical sample.
+
+Subtracting the mean and dividing by the standard deviation produces the
+standardized value
+\begin{equation}
+    \widehat{x}_k
+    =
+    \frac{x_k-\mu}{\sigma}.
+    \label{eq:norm-standardized-value}
+\end{equation}
+When \(\sigma>0\), this transformation has zero mean and unit variance over
+the feature dimension. In numerical implementations, the denominator is
+modified by a small positive constant \(\varepsilon\):
+\begin{equation}
+    \widehat{x}_k
+    =
+    \frac{x_k-\mu}{\sqrt{\sigma^2+\varepsilon}}.
+    \label{eq:norm-epsilon-standardization}
+\end{equation}
+The constant \(\varepsilon>0\) prevents division by zero when all feature
+values are identical and reduces numerical sensitivity when the variance is
+very small. With nonzero \(\varepsilon\), the resulting variance is not
+exactly one; it is
+\(\sigma^2/(\sigma^2+\varepsilon)\), which approaches one when
+\(\varepsilon\) is negligible relative to \(\sigma^2\).
+
+Most normalization operations can be expressed using the common affine
+formulation
+\begin{equation}
+    \operatorname{Norm}(\mathbf{x})
+    =
+    \boldsymbol{\gamma}\odot
+    \frac{\mathbf{x}-\boldsymbol{\mu}}
+    {\sqrt{\boldsymbol{\sigma}^{2}+\varepsilon}}
+    +
+    \boldsymbol{\beta},
+    \label{eq:norm-general-form}
+\end{equation}
+where the mean and variance are broadcast to the shape of the input,
+\(\boldsymbol{\gamma}\in\mathbb{R}^{C}\) and
+\(\boldsymbol{\beta}\in\mathbb{R}^{C}\) are learnable feature-wise scale
+and shift parameters, and \(\odot\) denotes element-wise multiplication.
+The scale and shift parameters allow the network to learn the output range
+required by subsequent layers. Thus, normalization does not permanently
+constrain the final output to have zero mean and unit variance; those
+properties describe the standardized intermediate values before the affine
+transformation. This common formulation and the dependence of different
+normalization methods on the dimensions used to calculate their statistics
+are described by \textcite{zhu2025dyt}.
+
+The choice of aggregation dimensions distinguishes normalization methods.
+For example, Batch Normalization calculates channel-wise statistics across
+the batch and token dimensions. For channel \(k\), its mean and variance
+are
+\begin{align}
+    \mu_k^{\mathrm{BN}}
+    &=
+    \frac{1}{BT}
+    \sum_{i=1}^{B}\sum_{j=1}^{T}x_{ijk},
+    \label{eq:norm-bn-mean}
+    \\
+    (\sigma_k^{\mathrm{BN}})^2
+    &=
+    \frac{1}{BT}
+    \sum_{i=1}^{B}\sum_{j=1}^{T}
+    (x_{ijk}-\mu_k^{\mathrm{BN}})^2.
+    \label{eq:norm-bn-variance}
+\end{align}
+Other methods used in convolutional architectures, including Group
+Normalization and Instance Normalization, use different groupings and
+aggregation dimensions. They share the broad objective of transforming
+activations using statistical quantities, but the axes over which those
+quantities are calculated differ. For Transformer architectures, the two
+principal statistical methods considered here are Layer Normalization and
+Root Mean Square Normalization (RMSNorm)
+\parencite{zhu2025dyt,corradini2025slmreview}.
+
+\subsection{Layer Normalization: formulation and geometry}
+\label{subsec:norm-layernorm}
+
+Layer Normalization (LayerNorm or LN) calculates the mean and variance
+independently for each token in each sample. For the token vector
+\(\mathbf{x}_{ij}\), its mean is
+\begin{equation}
+    \mu_{ij}
+    =
+    \frac{1}{C}\sum_{k=1}^{C}x_{ijk},
+    \label{eq:norm-ln-mean}
+\end{equation}
+and its variance is
+\begin{equation}
+    \sigma_{ij}^{2}
+    =
+    \frac{1}{C}\sum_{k=1}^{C}
+    (x_{ijk}-\mu_{ij})^2.
+    \label{eq:norm-ln-variance}
+\end{equation}
+The normalized output for feature \(k\), including the learnable affine
+parameters, is
+\begin{equation}
+    \boxed{
+    y_{ijk}^{\mathrm{LN}}
+    =
+    \gamma_k
+    \frac{x_{ijk}-\mu_{ij}}
+    {\sqrt{\sigma_{ij}^{2}+\varepsilon}}
+    +\beta_k.
+    }
+    \label{eq:norm-layernorm}
+\end{equation}
+Here, \(\gamma_k\) and \(\beta_k\) are shared across samples and token
+positions, but each feature channel has its own scale and shift parameters.
+The statistics, in contrast, are calculated separately for every pair
+\((i,j)\). The normalized representation of one token therefore does not
+depend on the statistics of another token or another sample in the batch.
+
+The distinction between the statistical transformation and the affine
+parameters is essential. Before the affine transformation, the feature
+values have zero mean and approximately unit variance. After multiplication
+by \(\gamma_k\) and addition of \(\beta_k\), these properties need not hold.
+The learnable parameters restore flexibility to the representation and allow
+subsequent attention or feed-forward operations to receive feature values
+with scales and offsets selected through training.
+
+\paragraph{Geometric interpretation.}
+The centering operation can be expressed as a projection in
+\(\mathbb{R}^{C}\). Let \(\mathbf{1}\in\mathbb{R}^{C}\) be the all-ones
+vector and let \(\mathbf{I}\) be the \(C\times C\) identity matrix. Define
+the centering matrix
+\begin{equation}
+    \mathbf{P}
+    =
+    \mathbf{I}
+    -
+    \frac{1}{C}\mathbf{1}\mathbf{1}^{\mathsf T}.
+    \label{eq:norm-centering-matrix}
+\end{equation}
+The mean of \(\mathbf{x}\) is
+\(\mu=C^{-1}\mathbf{1}^{\mathsf T}\mathbf{x}\), so the centered vector is
+\begin{equation}
+    \mathbf{x}_{c}
+    =
+    \mathbf{P}\mathbf{x}.
+    \label{eq:norm-projected-vector}
+\end{equation}
+The matrix \(\mathbf{P}\) is symmetric and idempotent:
+\begin{equation}
+    \mathbf{P}^{\mathsf T}=\mathbf{P},
+    \qquad
+    \mathbf{P}^{2}=\mathbf{P}.
+    \label{eq:norm-projection-properties}
+\end{equation}
+It projects the vector onto the subspace orthogonal to \(\mathbf{1}\), whose
+dimension is \(C-1\) for \(C>1\). The variance can consequently be written
+as
+\begin{equation}
+    \sigma^2
+    =
+    \frac{1}{C}\mathbf{x}_{c}^{\mathsf T}\mathbf{x}_{c}
+    =
+    \frac{1}{C}\|\mathbf{P}\mathbf{x}\|_2^2.
+    \label{eq:norm-variance-norm}
+\end{equation}
+Ignoring \(\varepsilon\), the standardized vector is
+\begin{equation}
+    \widehat{\mathbf{x}}
+    =
+    \frac{\sqrt{C}\,\mathbf{P}\mathbf{x}}
+    {\|\mathbf{P}\mathbf{x}\|_2},
+    \label{eq:norm-ln-geometric}
+\end{equation}
+provided that \(\mathbf{P}\mathbf{x}\neq\mathbf{0}\). It therefore lies on
+a sphere of radius \(\sqrt{C}\) inside the zero-mean subspace. LayerNorm
+first removes the component parallel to the all-ones vector and then fixes
+the magnitude of the remaining centered vector.
+
+This representation also reveals two invariance properties of the
+statistical part of LayerNorm. For \(a>0\) and scalar \(b\), and when
+\(\varepsilon\) is neglected,
+\begin{equation}
+    \operatorname{LN}_{\mathrm{stat}}
+    (a\mathbf{x}+b\mathbf{1})
+    =
+    \operatorname{LN}_{\mathrm{stat}}(\mathbf{x}).
+    \label{eq:norm-ln-invariance}
+\end{equation}
+Adding the same scalar to all features is removed by centering. Multiplying
+all features by a positive scalar changes the centered vector and its
+standard deviation by the same factor, so their ratio is unchanged. The
+learnable affine transformation is not included in
+\(\operatorname{LN}_{\mathrm{stat}}\) in
+\cref{eq:norm-ln-invariance}.
+
+\paragraph{Differential behavior.}
+The Jacobian of a transformation describes how small changes in its input
+affect its output. It is therefore central to understanding how gradients
+are propagated through normalization during backpropagation. Define
+\begin{equation}
+    s
+    =
+    \sqrt{
+        \frac{1}{C}\mathbf{x}_{c}^{\mathsf T}\mathbf{x}_{c}
+        +\varepsilon
+    },
+    \qquad
+    \widehat{\mathbf{x}}=\frac{\mathbf{x}_{c}}{s}.
+    \label{eq:norm-ln-s-definition}
+\end{equation}
+Since \(\mathbf{x}_{c}=\mathbf{P}\mathbf{x}\), differentiating the
+normalized vector with respect to the input gives
+\begin{equation}
+    \boxed{
+    \frac{\partial\widehat{\mathbf{x}}}{\partial\mathbf{x}}
+    =
+    \frac{\mathbf{P}}{s}
+    -
+    \frac{\mathbf{x}_{c}\mathbf{x}_{c}^{\mathsf T}}
+    {Cs^{3}}.
+    }
+    \label{eq:norm-ln-jacobian}
+\end{equation}
+The first term represents centering and scaling of input perturbations. The
+second term accounts for the fact that the denominator also depends on the
+input vector. A change in one feature can therefore alter the normalized
+values of the other features through the shared mean and variance.
+
+Let
+\(\boldsymbol{\Gamma}
+=\operatorname{diag}(\gamma_1,\ldots,\gamma_C)\).
+The Jacobian of the complete affine LayerNorm operation is
+\begin{equation}
+    \frac{\partial\mathbf{y}^{\mathrm{LN}}}{\partial\mathbf{x}}
+    =
+    \boldsymbol{\Gamma}
+    \left(
+        \frac{\mathbf{P}}{s}
+        -
+        \frac{\mathbf{x}_{c}\mathbf{x}_{c}^{\mathsf T}}
+        {Cs^{3}}
+    \right).
+    \label{eq:norm-ln-affine-jacobian}
+\end{equation}
+The shift vector \(\boldsymbol{\beta}\) does not appear because its
+derivative with respect to the input is zero. The feature-wise scale
+parameters modify the gradient magnitude of the corresponding output
+features. These expressions are direct mathematical consequences of the
+LayerNorm formulation in \cref{eq:norm-layernorm}; they are not additional
+empirical results reported by the source paper.
+
+\subsection{RMSNorm and normalization within residual Transformer blocks}
+\label{subsec:norm-rmsnorm-residual}
+
+Root Mean Square Normalization (RMSNorm) simplifies LayerNorm by removing
+the mean-centering step. Instead of calculating squared deviations from the
+mean, it calculates the mean of the squared feature values. For a token
+representation \(\mathbf{x}_{ij}\), the mean square is
+\begin{equation}
+    m_{ij}^{(2)}
+    =
+    \frac{1}{C}\sum_{k=1}^{C}x_{ijk}^{2},
+    \label{eq:norm-rms-mean-square}
+\end{equation}
+and the root mean square is
+\begin{equation}
+    r_{ij}
+    =
+    \sqrt{
+        \frac{1}{C}\sum_{k=1}^{C}x_{ijk}^{2}
+    }.
+    \label{eq:norm-rms}
+\end{equation}
+The method can be expressed within the common affine formulation by setting
+the mean to zero and using the mean square as the variance-like quantity:
+\begin{equation}
+    \boxed{
+    y_{ijk}^{\mathrm{RMS}}
+    =
+    \gamma_k
+    \frac{x_{ijk}}
+    {\sqrt{
+        \frac{1}{C}\sum_{\ell=1}^{C}x_{ij\ell}^{2}
+        +\varepsilon
+    }}
+    +\beta_k.
+    }
+    \label{eq:norm-rmsnorm}
+\end{equation}
+The defining distinction is that RMSNorm does not subtract the token's
+feature mean. The common affine expression in
+\cref{eq:norm-general-form} is the parameterization used for the
+normalization formulation in \textcite{zhu2025dyt}; implementations may
+use a scale-only affine parameterization. The statistical distinction
+between LayerNorm and RMSNorm is the use of the root mean square without
+mean-centering, as also emphasized by
+\textcite{corradini2025slmreview}.
+
+The relation between variance and mean square follows by expanding the
+definition of variance:
+\begin{align}
+    \frac{1}{C}\sum_{k=1}^{C}x_k^2
+    &=
+    \frac{1}{C}\sum_{k=1}^{C}
+    \bigl[(x_k-\mu)+\mu\bigr]^2
+    \nonumber\\
+    &=
+    \frac{1}{C}\sum_{k=1}^{C}(x_k-\mu)^2
+    +\mu^2
+    \nonumber\\
+    &=
+    \sigma^2+\mu^2.
+    \label{eq:norm-mean-square-variance}
+\end{align}
+Thus, mean square and variance are equal only when the feature mean is zero.
+RMSNorm controls the root mean square magnitude of the vector, but it does
+not explicitly force the mean of its features to zero.
+
+\paragraph{Geometric interpretation and Jacobian.}
+Ignoring \(\varepsilon\), the root mean square is
+\(r=\|\mathbf{x}\|_2/\sqrt{C}\), and the normalized vector is
+\begin{equation}
+    \widehat{\mathbf{x}}^{\mathrm{RMS}}
+    =
+    \frac{\sqrt{C}}{\|\mathbf{x}\|_2}\mathbf{x}.
+    \label{eq:norm-rms-geometric}
+\end{equation}
+Its Euclidean norm is \(\sqrt{C}\), but it is not restricted to the
+zero-mean subspace. RMSNorm rescales the original vector without first
+projecting out its component in the direction of \(\mathbf{1}\). It is
+invariant to positive scalar multiplication when \(\varepsilon\) is
+neglected, but it is not invariant to adding a common scalar to all
+features.
+
+For
+\begin{equation}
+    r
+    =
+    \sqrt{
+        \frac{1}{C}\mathbf{x}^{\mathsf T}\mathbf{x}
+        +\varepsilon
+    },
+    \qquad
+    \widehat{\mathbf{x}}^{\mathrm{RMS}}=\frac{\mathbf{x}}{r},
+    \label{eq:norm-rms-r-definition}
+\end{equation}
+the Jacobian is
+\begin{equation}
+    \boxed{
+    \frac{\partial\widehat{\mathbf{x}}^{\mathrm{RMS}}}
+    {\partial\mathbf{x}}
+    =
+    \frac{\mathbf{I}}{r}
+    -
+    \frac{\mathbf{x}\mathbf{x}^{\mathsf T}}{Cr^{3}}.
+    }
+    \label{eq:norm-rms-jacobian}
+\end{equation}
+As in LayerNorm, the denominator couples the feature values of a token:
+changing one feature changes the root mean square used to normalize all
+features. The difference is that RMSNorm does not contain the centering
+projection \(\mathbf{P}\).
+
+\paragraph{Residual connections.}
+Normalization is used together with residual connections in Transformer
+blocks. Let \(\mathbf{H}\) be the input to a sublayer and let \(F\) denote
+the transformation performed by that sublayer, such as an attention or
+feed-forward operation. A residual addition forms
+\begin{equation}
+    \mathbf{Z}
+    =
+    \mathbf{H}+F(\mathbf{H}).
+    \label{eq:norm-residual-addition}
+\end{equation}
+The derivative of this addition with respect to its input is
+\begin{equation}
+    \frac{\partial\mathbf{Z}}{\partial\mathbf{H}}
+    =
+    \mathbf{I}+\mathbf{J}_{F},
+    \label{eq:norm-residual-jacobian}
+\end{equation}
+where \(\mathbf{J}_{F}\) is the Jacobian of \(F\). The identity term
+provides a direct contribution to the gradient independently of the
+derivative of the sublayer transformation.
+
+In the post-residual arrangement described in the systematic review,
+normalization is applied after the
+sublayer output has been added to its input:
+\begin{equation}
+    \mathbf{H}_{\mathrm{next}}
+    =
+    \operatorname{LN}
+    \bigl(\mathbf{H}+F(\mathbf{H})\bigr).
+    \label{eq:norm-post-residual}
+\end{equation}
+An RMSNorm operation can occupy the corresponding normalization position
+in architectures that use RMSNorm. Residual addition and normalization
+therefore have complementary roles in this described block arrangement:
+the residual path provides a direct route for information and gradients,
+while normalization controls the numerical scale of the representation
+passed to subsequent computation. The equation specifies the arrangement
+discussed by the review and should not be read as a claim that every
+Transformer implementation uses an identical normalization placement.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/normalization_pipeline}
+    \caption{Schematic comparison of the operations performed by LayerNorm,
+    RMSNorm, and Dynamic Tanh. LayerNorm calculates token-wise mean and
+    variance and centers the feature vector; RMSNorm calculates the
+    token-wise root mean square without centering; DyT applies a learnable
+    element-wise scaling followed by a hyperbolic tangent. The comparison
+    follows the formulations in \textcite{zhu2025dyt} and
+    \textcite{corradini2025slmreview}.}
+    \label{fig:norm-method-comparison}
+\end{figure}
+% Alt text for accessibility register: Three parallel columns compare
+% LayerNorm, RMSNorm, and Dynamic Tanh. The LayerNorm column calculates a
+% token mean and variance, centers and scales the vector, and applies
+% channel-wise affine parameters. The RMSNorm column calculates the root
+% mean square and rescales without centering. The Dynamic Tanh column
+% multiplies each activation by a learnable scalar, applies tanh, and then
+% applies channel-wise scale and shift parameters.
+
+\subsection{Observed input-output behavior of trained normalization layers}
+\label{subsec:norm-observed-behavior}
+
+The statistical definitions explain how LayerNorm and RMSNorm are computed,
+but they do not by themselves describe the aggregate input-output behavior
+observed across a trained Transformer. To investigate this behavior,
+\textcite{zhu2025dyt} examine normalization layers in three trained
+architectures: a Vision Transformer (ViT-B) trained on ImageNet-1K, a
+wav2vec 2.0 Large Transformer trained on LibriSpeech, and a Diffusion
+Transformer (DiT-XL) trained on ImageNet-1K. In the examined models,
+LayerNorm is applied within the Transformer blocks and before the final
+linear projection.
+
+The authors perform forward passes on mini-batches and record the tensor
+elements immediately before and after selected LayerNorm operations,
+before the learnable affine transformation. Because LayerNorm preserves
+the tensor dimensions, each input activation can be paired with its
+corresponding normalized output. Plotting these pairs reveals that the
+relationships in earlier normalization layers are predominantly linear,
+whereas deeper layers often exhibit full or partial S-shaped curves.
+
+An important distinction is required when interpreting these plots. For
+one token, the mean and standard deviation are fixed across its feature
+channels during the normalization operation. Its input-output relation is
+therefore
+\begin{equation}
+    y_k
+    =
+    \frac{x_k-\mu}{\sqrt{\sigma^2+\varepsilon}},
+    \label{eq:norm-token-affine-map}
+\end{equation}
+which is affine in \(x_k\) for that token. Different tokens, however, have
+different means and standard deviations. Their token-specific affine
+relations consequently have different slopes and intercepts. When
+activations from many tokens are plotted together, the collection of these
+different lines can form an aggregate nonlinear pattern.
+
+The token-grouped visualization reported by \textcite{zhu2025dyt} shows
+approximately straight relationships within individual tokens, with
+different slopes associated with different token variances. The channel-
+grouped visualization shows that channels can span substantially different
+input ranges. A small number of channels contain extreme values, and these
+values are strongly reduced by the normalization operation. The aggregate
+input-output relationship therefore resembles a scaled hyperbolic tangent,
+even though the operation applied to each individual token is based on
+centering and division by its standard deviation.
+
+The authors report that approximately \(99\%\) of the activation points in
+their analysis fall within the central, approximately linear part of the
+observed S-shaped relationship. Nevertheless, some activations are
+extreme; in the examined ViT, examples include values greater than \(50\)
+or smaller than \(-50\). The normalization operation reduces the relative
+magnitude of these outlying values and brings them closer to the range
+occupied by the majority of activations. This disproportionate treatment
+of extreme values is not reproduced by a single affine transformation with
+a constant slope. The observation motivates the hypothesis that nonlinear
+suppression of extreme activations is an important functional effect of
+normalization in the examined trained networks
+\parencite{zhu2025dyt}.
+
+The hyperbolic tangent function provides a simple mathematical model of
+the observed S-shaped relation. It is defined by
+\begin{equation}
+    \tanh(x)
+    =
+    \frac{e^x-e^{-x}}{e^x+e^{-x}},
+    \label{eq:norm-tanh-definition}
+\end{equation}
+and maps real inputs into the bounded interval \((-1,1)\). Its limiting
+behavior is
+\begin{equation}
+    \lim_{x\to+\infty}\tanh(x)=1,
+    \qquad
+    \lim_{x\to-\infty}\tanh(x)=-1,
+    \qquad
+    \tanh(0)=0.
+    \label{eq:norm-tanh-limits}
+\end{equation}
+Near the origin, its Taylor expansion is
+\begin{equation}
+    \tanh(x)
+    =
+    x-\frac{x^3}{3}
+    +\frac{2x^5}{15}
+    -\frac{17x^7}{315}
+    +\cdots,
+    \label{eq:norm-tanh-taylor}
+\end{equation}
+so the function is approximately linear when \(|x|\) is small. Its
+derivative is
+\begin{equation}
+    \frac{d}{dx}\tanh(x)
+    =
+    1-\tanh^2(x)
+    =
+    \operatorname{sech}^2(x).
+    \label{eq:norm-tanh-derivative}
+\end{equation}
+The derivative is largest at the origin and approaches zero as the
+magnitude of the input increases. Thus, the central region transmits
+small changes approximately linearly, while the saturated regions reduce
+the sensitivity of the output to further increases in the input magnitude.
+
+A scaled hyperbolic tangent,
+\begin{equation}
+    f_{\alpha}(x)=\tanh(\alpha x),
+    \label{eq:norm-scaled-tanh}
+\end{equation}
+changes the width of the transition region. For \(\alpha>0\), increasing
+\(\alpha\) causes saturation to occur over a narrower input range, whereas
+decreasing \(\alpha\) expands the approximately linear region. This
+scaling property is the mathematical basis for the learnable parameter
+introduced by Dynamic Tanh.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/dyt_saturation_curve}
+    \caption{Schematic S-shaped input-output relation of the hyperbolic
+    tangent. The central region is approximately linear, while the output
+    approaches bounded positive and negative limits for large input
+    magnitudes. The role of the scale parameter is discussed by
+    \textcite{zhu2025dyt}.}
+    \label{fig:norm-tanh-curve}
+\end{figure}
+% Alt text for accessibility register: A two-dimensional plot of tanh(alpha x)
+% with an increasing S-shaped curve, horizontal saturation levels near -1
+% and +1, and a central region around the origin that is approximately linear.
+
+\subsection{Dynamic Tanh: formulation, derivatives, and implementation}
+\label{subsec:norm-dyt-formulation}
+
+The S-shaped aggregate input-output relationships observed in trained
+normalization layers motivate an alternative to statistical normalization.
+Rather than calculating the mean and variance of each token representation,
+Dynamic Tanh (DyT) applies a learnable element-wise nonlinear transformation.
+For an input tensor \(\mathbf{X}\), the operation introduced by
+\textcite{zhu2025dyt} is
+\begin{equation}
+    \boxed{
+    \operatorname{DyT}(\mathbf{X})
+    =
+    \boldsymbol{\gamma}\odot
+    \tanh(\alpha\mathbf{X})
+    +
+    \boldsymbol{\beta}.
+    }
+    \label{eq:norm-dyt}
+\end{equation}
+The scalar \(\alpha\) is learnable and shared across the elements of a DyT
+layer. The vectors
+\(\boldsymbol{\gamma},\boldsymbol{\beta}\in\mathbb{R}^{C}\) are
+learnable channel-wise scale and shift parameters. The hyperbolic tangent
+is applied element-wise, and the channel-wise parameters are broadcast
+across the batch and token dimensions. For one activation, the operation
+is
+\begin{equation}
+    y_{ijk}
+    =
+    \gamma_k\tanh(\alpha x_{ijk})+\beta_k.
+    \label{eq:norm-dyt-component}
+\end{equation}
+
+The scalar \(\alpha\) controls the scale of the input before the nonlinear
+function. The parameter \(\gamma_k\) controls the output scale of channel
+\(k\), and \(\beta_k\) controls its output displacement. If \(\alpha>0\),
+the output of channel \(k\) approaches
+\(\beta_k+\gamma_k\) for large positive inputs and
+\(\beta_k-\gamma_k\) for large negative inputs. More generally, its
+bounded range is determined by \(\beta_k\) and \(|\gamma_k|\). Unlike
+LayerNorm and RMSNorm, DyT does not calculate a mean, variance, or root
+mean square from the current input tensor.
+
+\paragraph{Local behavior and saturation.}
+For one feature, define
+\begin{equation}
+    y_k
+    =
+    \gamma_k\tanh(\alpha x_k)+\beta_k.
+    \label{eq:norm-dyt-scalar}
+\end{equation}
+Its derivative with respect to the input is
+\begin{equation}
+    \boxed{
+    \frac{\partial y_k}{\partial x_k}
+    =
+    \gamma_k\alpha
+    \left[1-\tanh^2(\alpha x_k)\right].
+    }
+    \label{eq:norm-dyt-input-derivative}
+\end{equation}
+At the origin, the derivative is \(\gamma_k\alpha\). For small
+\(|\alpha x_k|\), the Taylor expansion gives
+\begin{equation}
+    y_k
+    \approx
+    \gamma_k\alpha x_k+\beta_k.
+    \label{eq:norm-dyt-local-linear}
+\end{equation}
+For large \(|\alpha x_k|\), the derivative approaches zero and the output
+saturates. This supplies an element-wise mechanism for reducing the
+sensitivity of the output to extreme input values.
+
+The derivative with respect to the shared scale parameter is
+\begin{equation}
+    \frac{\partial y_k}{\partial\alpha}
+    =
+    \gamma_k x_k
+    \left[1-\tanh^2(\alpha x_k)\right].
+    \label{eq:norm-dyt-alpha-derivative}
+\end{equation}
+For a scalar loss \(\mathcal{L}\), the parameter gradients accumulate
+contributions from the batch and sequence dimensions:
+\begin{align}
+    \frac{\partial\mathcal{L}}{\partial\beta_k}
+    &=
+    \sum_{i,j}
+    \frac{\partial\mathcal{L}}{\partial y_{ijk}},
+    \label{eq:norm-dyt-beta-gradient}
+    \\
+    \frac{\partial\mathcal{L}}{\partial\gamma_k}
+    &=
+    \sum_{i,j}
+    \frac{\partial\mathcal{L}}{\partial y_{ijk}}
+    \tanh(\alpha x_{ijk}),
+    \label{eq:norm-dyt-gamma-gradient}
+    \\
+    \frac{\partial\mathcal{L}}{\partial\alpha}
+    &=
+    \sum_{i,j,k}
+    \frac{\partial\mathcal{L}}{\partial y_{ijk}}
+    \gamma_k x_{ijk}
+    \left[1-\tanh^2(\alpha x_{ijk})\right].
+    \label{eq:norm-dyt-alpha-gradient}
+\end{align}
+These expressions show how the scalar parameter is learned from the
+activation elements throughout the layer. Contributions from highly
+saturated activations are reduced by the factor
+\(1-\tanh^2(\alpha x_{ijk})\).
+
+For a token vector, define
+\(\boldsymbol{\Gamma}
+=\operatorname{diag}(\gamma_1,\ldots,\gamma_C)\).
+The Jacobian of DyT is diagonal:
+\begin{equation}
+    \boxed{
+    \mathbf{J}_{\mathrm{DyT}}
+    =
+    \boldsymbol{\Gamma}
+    \operatorname{diag}
+    \left(
+        \alpha\left[
+            1-\tanh^2(\alpha\mathbf{x})
+        \right]
+    \right).
+    }
+    \label{eq:norm-dyt-jacobian}
+\end{equation}
+The expression inside the second diagonal matrix is understood
+element-wise. The diagonal structure follows from the fact that each
+output activation depends directly only on its corresponding input
+activation. This differs from LayerNorm and RMSNorm, whose shared
+token-level denominators couple the feature values in the Jacobian.
+The derivative comparison is a mathematical consequence of the
+respective forward equations.
+
+\paragraph{Implementation and initialization.}
+For an input tensor of shape \([B,T,C]\), the implementation in
+\textcite{zhu2025dyt} initializes the scalar parameter to a chosen value
+\(\alpha_0\), initializes the channel-wise scale vector to ones, and
+initializes the channel-wise shift vector to zeros:
+\begin{equation}
+    \alpha=\alpha_0,
+    \qquad
+    \boldsymbol{\gamma}=\mathbf{1}_C,
+    \qquad
+    \boldsymbol{\beta}=\mathbf{0}_C.
+    \label{eq:norm-dyt-initialization}
+\end{equation}
+The forward pass first computes
+\begin{equation}
+    \mathbf{U}=\tanh(\alpha\mathbf{X}),
+    \label{eq:norm-dyt-intermediate}
+\end{equation}
+and then applies
+\begin{equation}
+    \mathbf{Y}
+    =
+    \boldsymbol{\gamma}\odot\mathbf{U}
+    +\boldsymbol{\beta}.
+    \label{eq:norm-dyt-output}
+\end{equation}
+The operation replaces one normalization layer with one DyT layer. It
+can be inserted at normalization locations in attention blocks,
+feed-forward blocks, and before the final linear projection. The original
+activation functions in the architecture, such as GELU or ReLU, are not
+replaced by DyT; the method replaces the normalization operation while
+leaving those activation functions unchanged
+\parencite{zhu2025dyt}.
+
+The learnable scalar \(\alpha\) is not calculated from the current token's
+statistics. The analysis in \textcite{zhu2025dyt} nevertheless finds that
+its value tracks the inverse standard deviation of the input activations
+during training and is correlated with that quantity in trained models.
+This indicates that \(\alpha\) can partially learn an activation-scale
+adjustment. However, it is shared across the input activations of a layer,
+rather than being calculated separately for every token. The scalar alone
+therefore cannot reproduce token-specific statistical normalization or
+the nonlinear suppression of extreme values; the latter is supplied by
+the hyperbolic tangent function.
+
+\subsection{Computational analysis and a worked numerical example}
+\label{subsec:norm-computation-example}
+
+The three methods differ in the operations required for each token
+representation. LayerNorm calculates the feature mean, subtracts it,
+calculates the mean squared centered deviation, adds the stability
+constant, takes a square root, and scales the centered features. RMSNorm
+calculates the mean of squared features, adds the stability constant,
+takes a square root, and scales the original features. DyT performs a
+scalar multiplication, an element-wise hyperbolic tangent, and a
+channel-wise affine transformation.
+
+For a tensor with \(B T\) token representations and \(C\) features per
+token, each method requires work proportional to the number of activation
+elements. Their leading arithmetic complexity is therefore
+\begin{equation}
+    \mathcal{O}(BTC).
+    \label{eq:norm-complexity}
+\end{equation}
+This asymptotic expression does not imply equal execution time. LayerNorm
+and RMSNorm require reductions over the feature dimension, whereas DyT
+uses element-wise operations and a nonlinear function. Actual latency
+depends on hardware, memory traffic, kernel fusion, numerical precision,
+and compiler optimization. In particular, \textcite{zhu2025dyt} report
+that DyT does not provide a speedup over properly compiled and optimized
+normalization layers, despite its simpler conceptual formulation.
+
+A numerical example makes the transformations explicit. Consider the
+four-dimensional token vector
+\begin{equation}
+    \mathbf{x}
+    =
+    \begin{bmatrix}
+        1 & 2 & 3 & 4
+    \end{bmatrix}^{\mathsf T},
+    \qquad C=4.
+    \label{eq:norm-example-input}
+\end{equation}
+For this example, set \(\varepsilon=0\) to keep the arithmetic transparent,
+and set the affine scale to one and the affine shift to zero.
+
+The LayerNorm mean is
+\begin{equation}
+    \mu
+    =
+    \frac{1+2+3+4}{4}
+    =
+    2.5.
+    \label{eq:norm-example-mean}
+\end{equation}
+The variance is
+\begin{align}
+    \sigma^2
+    &=
+    \frac{(1-2.5)^2+(2-2.5)^2
+    +(3-2.5)^2+(4-2.5)^2}{4}
+    \nonumber\\
+    &=
+    \frac{2.25+0.25+0.25+2.25}{4}
+    =
+    1.25,
+    \label{eq:norm-example-variance}
+\end{align}
+and the standard deviation is
+\begin{equation}
+    \sigma=\sqrt{1.25}\approx1.1180.
+    \label{eq:norm-example-std}
+\end{equation}
+The resulting LayerNorm vector is approximately
+\begin{equation}
+    \widehat{\mathbf{x}}^{\mathrm{LN}}
+    =
+    \begin{bmatrix}
+        -1.3416 & -0.4472 & 0.4472 & 1.3416
+    \end{bmatrix}^{\mathsf T}.
+    \label{eq:norm-example-ln-output}
+\end{equation}
+
+For RMSNorm, the mean square is
+\begin{equation}
+    m^{(2)}
+    =
+    \frac{1^2+2^2+3^2+4^2}{4}
+    =
+    \frac{30}{4}
+    =
+    7.5,
+    \label{eq:norm-example-mean-square}
+\end{equation}
+so that
+\begin{equation}
+    r=\sqrt{7.5}\approx2.7386.
+    \label{eq:norm-example-rms}
+\end{equation}
+The RMS-normalized vector is consequently
+\begin{equation}
+    \widehat{\mathbf{x}}^{\mathrm{RMS}}
+    \approx
+    \begin{bmatrix}
+        0.3651 & 0.7303 & 1.0954 & 1.4606
+    \end{bmatrix}^{\mathsf T}.
+    \label{eq:norm-example-rms-output}
+\end{equation}
+Unlike LayerNorm, RMSNorm does not subtract the mean, so the signs and
+relative direction of the original vector are retained.
+
+For DyT, choose \(\alpha=0.5\), \(\boldsymbol{\gamma}=\mathbf{1}\),
+and \(\boldsymbol{\beta}=\mathbf{0}\). Its output is
+\begin{equation}
+    \operatorname{DyT}(\mathbf{x})
+    =
+    \tanh(0.5\mathbf{x})
+    \approx
+    \begin{bmatrix}
+        0.4621 & 0.7616 & 0.9051 & 0.9640
+    \end{bmatrix}^{\mathsf T}.
+    \label{eq:norm-example-dyt-output}
+\end{equation}
+The fourth component is close to the positive saturation limit, whereas
+the first component remains in the more nearly linear region. This example
+illustrates the different mathematical operations; it is not an
+experimental result reported by either source paper.
+
+\subsection{Language-model evaluation and initialization}
+\label{subsec:norm-language-model-evaluation}
+
+The replacement of a normalization layer is useful only if it preserves
+the behavior of the complete model during training and evaluation.
+\textcite{zhu2025dyt} investigate this question by replacing RMSNorm with
+DyT in LLaMA models of different sizes. The reported configurations are
+LLaMA 7B, 13B, 34B, and 70B. The models are pretrained on The Pile using
+200 billion tokens and follow the LLaMA training recipe. The DyT
+experiments also introduce a learnable scalar parameter after the initial
+embedding layer and tune the initial value of \(\alpha\).
+
+The authors report the final training loss and average performance over
+15 zero-shot tasks from the lm-eval framework. The results are summarized
+in \cref{tab:norm-llama-results}. The zero-shot scores are identical at
+the reported precision for the RMSNorm and DyT versions of all four
+models. The final losses differ by \(0.01\) for the 7B and 13B models and
+are identical at the reported precision for the 34B and 70B models.
+The training curves are also closely aligned across the four model sizes
+\parencite{zhu2025dyt}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{LLaMA pretraining loss and average performance on 15 zero-shot
+    lm-eval tasks when using RMSNorm or DyT. Values are reproduced from
+    Table 4 of \textcite{zhu2025dyt}.}
+    \label{tab:norm-llama-results}
+    \begin{tabular}{lcccc}
+        \toprule
+        Model
+        & RMSNorm score
+        & DyT score
+        & RMSNorm loss
+        & DyT loss \\
+        \midrule
+        LLaMA 7B  & 0.513 & 0.513 & 1.59 & 1.60 \\
+        LLaMA 13B & 0.529 & 0.529 & 1.53 & 1.54 \\
+        LLaMA 34B & 0.536 & 0.536 & 1.50 & 1.50 \\
+        LLaMA 70B & 0.549 & 0.549 & 1.45 & 1.45 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{The role of the initial value of \(\alpha\).}
+The authors find that an initial value of \(\alpha_0=0.5\) is generally
+sufficient for the non-language-model tasks examined in their study.
+The situation differs for LLM training: tuning \(\alpha_0\) can
+substantially improve the training loss. Their LLaMA experiments indicate
+that larger models require smaller initial values and that DyT layers in
+attention blocks benefit from larger initial values than those in
+feed-forward blocks or before the final output projection.
+
+The model-specific values reported in Table 10 of
+\textcite{zhu2025dyt} are shown in
+\cref{tab:norm-llama-alpha-init}. The distinction between the attention
+and other locations becomes particularly important as model width
+increases.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Reported initial values of the DyT scaling parameter for
+    attention blocks and other DyT locations in LLaMA models. Values are
+    reproduced from Table 10 of \textcite{zhu2025dyt}.}
+    \label{tab:norm-llama-alpha-init}
+    \begin{tabular}{lccc}
+        \toprule
+        Model & Width & Depth & \(\alpha_0\) (attention / other) \\
+        \midrule
+        LLaMA 7B  & 4096 & 32 & \(0.8/0.20\) \\
+        LLaMA 13B & 5120 & 40 & \(0.6/0.15\) \\
+        LLaMA 34B & 8196 & 48 & \(0.2/0.05\) \\
+        LLaMA 70B & 8196 & 80 & \(0.2/0.05\) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+To separate the influence of model width and depth, the authors also
+report optimal initializations across combinations of widths and depths.
+The values are reproduced in
+\cref{tab:norm-alpha-width-depth}. The selected initialization remains
+constant across the tested depths at a given width, while it decreases
+as width increases. The authors therefore identify width as the more
+important factor in these experiments and report comparatively little
+influence from depth.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Reported optimal \(\alpha_0\) values
+    (attention / other locations) across model widths and depths.
+    Values are reproduced from Table 11 of
+    \textcite{zhu2025dyt}.}
+    \label{tab:norm-alpha-width-depth}
+    \begin{tabular}{lcccc}
+        \toprule
+        Width & Depth 8 & Depth 16 & Depth 32 & Depth 64 \\
+        \midrule
+        1024 & \(1.0/1.0\) & \(1.0/1.0\) & \(1.0/1.0\) & \(1.0/1.0\) \\
+        2048 & \(1.0/0.5\) & \(1.0/0.5\) & \(1.0/0.5\) & \(1.0/0.5\) \\
+        4096 & \(0.8/0.2\) & \(0.8/0.2\) & \(0.8/0.2\) & \(0.8/0.2\) \\
+        8192 & \(0.2/0.05\) & \(0.2/0.05\) & \(0.2/0.05\) & \(0.2/0.05\) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The dependence on \(\alpha_0\) is also related to training stability.
+In the supervised ViT experiments, larger models are more prone to
+instability, and reducing either the learning rate or the initial
+\(\alpha_0\) improves stability. The authors report that a default
+\(\alpha_0=0.5\) gives stability comparable to LayerNorm for the
+non-LLM settings they examine. For LLMs, however, their results motivate
+separate tuning of the initial values at different architectural
+locations rather than relying on one universal value
+\parencite{zhu2025dyt}.
+
+\paragraph{Ablation of the squashing function and the learnable scale.}
+The role of the hyperbolic tangent is tested by replacing it with
+hardtanh, sigmoid, or the identity function. In the ViT-S and ViT-B
+experiments, using the identity function leads to training divergence,
+whereas the squashing functions permit stable training. Among the
+tested squashing functions, tanh achieves the highest reported accuracy.
+The results are reproduced in
+\cref{tab:norm-squashing-ablation}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{ImageNet-1K classification accuracy with alternative DyT
+    squashing functions. The identity-function experiments diverged;
+    the preceding accuracy is the highest reached before divergence.
+    Values are reproduced from Table 7 of
+    \textcite{zhu2025dyt}.}
+    \label{tab:norm-squashing-ablation}
+    \begin{tabular}{lcccc}
+        \toprule
+        Model & Identity & Tanh & Hardtanh & Sigmoid \\
+        \midrule
+        ViT-S & \(58.5\%\rightarrow\text{failed}\)
+              & \(80.3\%\) & \(79.9\%\) & \(79.6\%\) \\
+        ViT-B & \(61.0\%\rightarrow\text{failed}\)
+              & \(82.5\%\) & \(82.2\%\) & \(81.6\%\) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The learnable scale is examined separately by comparing the same
+squashing functions with and without \(\alpha\). For ViT-B, removing
+\(\alpha\) reduces the reported accuracy for all three nonlinear
+functions. With tanh, the accuracy decreases from \(82.5\%\) to
+\(81.1\%\); with hardtanh, it decreases from \(82.2\%\) to \(80.7\%\);
+and with sigmoid, it decreases from \(81.6\%\) to \(80.7\%\).
+These results indicate that the squashing function and its learnable
+input scale make complementary contributions in the tested setting
+\parencite{zhu2025dyt}.
+
+\subsection{Normalization choices in Small Language Models}
+\label{subsec:norm-small-language-models}
+
+The choice between LayerNorm and RMSNorm is also visible in the
+architectural trends of Small Language Models. These models are designed
+to balance language-model capability against constraints on parameter
+count, memory, inference time, and deployment hardware. In this setting,
+the computational structure of repeatedly applied Transformer
+components becomes an important design consideration.
+
+The systematic review by \textcite{corradini2025slmreview} analyzes
+70 English-language studies published between January 2023 and January
+2025, focusing on recent SLM developments and primarily on models with
+up to seven billion parameters. Its architectural analysis identifies
+RMSNorm as a frequently adopted component. The review reports RMSNorm
+in approximately \(66\%\) of the analyzed model designs and describes
+its prevalence as a preference for a computationally lighter alternative
+to standard LayerNorm.
+
+This prevalence is consistent with the mathematical distinction already
+established. RMSNorm omits the mean-centering operation and uses the
+root mean square of the token features to determine the scale. Repeating
+this simpler statistical calculation across many tokens and layers can
+be relevant to the computational design of compact language models.
+However, the reported \(66\%\) is a frequency within the review's
+selected research corpus; it is not a universal estimate for every
+existing SLM or language model architecture. Nor does the frequency
+alone establish a controlled performance advantage over LayerNorm
+\parencite{corradini2025slmreview}.
+
+The three methods therefore represent different choices about how
+activation behavior is controlled. LayerNorm uses token-specific
+centering and variance scaling. RMSNorm retains token-specific
+statistical scaling but removes mean-centering. DyT does not calculate
+token statistics and instead uses a learnable element-wise nonlinear
+transformation. Their common architectural purpose does not make their
+mathematical operations interchangeable in every setting.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \setlength{\tabcolsep}{3pt}
+    \caption{Conceptual comparison of the three methods based on the
+    formulations discussed by \textcite{zhu2025dyt} and
+    \textcite{corradini2025slmreview}.}
+    \label{tab:norm-method-comparison}
+    \begin{tabularx}{\textwidth}{p{0.22\textwidth}XXX}
+        \toprule
+        Property & LayerNorm & RMSNorm & Dynamic Tanh \\
+        \midrule
+        Mean calculation
+        & Yes
+        & No
+        & No \\
+        Variance or RMS calculation
+        & Variance
+        & Root mean square
+        & No input statistic \\
+        Mean-centering
+        & Yes
+        & No
+        & No \\
+        Input scaling
+        & Token-specific standard deviation
+        & Token-specific root mean square
+        & Learnable layer-wise scalar \\
+        Nonlinear saturation
+        & Indirect aggregate behavior
+        & No explicit squashing function
+        & Explicit hyperbolic tangent \\
+        Feature coupling in the forward Jacobian
+        & Yes
+        & Yes
+        & No; diagonal Jacobian \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\subsection{Limitations and connection to the attention mechanism}
+\label{subsec:norm-limitations-transition}
+
+The results of \textcite{zhu2025dyt} challenge the assumption that
+statistical normalization layers are indispensable for training modern
+Transformer architectures. They do not, however, establish that DyT is
+a universal replacement for every normalization method or architecture.
+The experiments primarily investigate networks that use LayerNorm or
+RMSNorm. The authors report that preliminary experiments do not support
+a direct replacement of Batch Normalization by DyT in conventional
+ResNet architectures. The applicability of DyT to other normalization
+methods therefore remains unresolved.
+
+The computational implications also require qualification. Although
+DyT removes the statistical reductions used by LayerNorm and RMSNorm,
+the experiments report no speedup over optimized normalization layers.
+Actual latency depends on hardware and implementation; a simpler
+expression does not guarantee lower deployment latency
+\parencite{zhu2025dyt}.
+
+The evidence from the two provided studies supports a more precise
+understanding of normalization as an architectural design choice.
+The systematic review identifies RMSNorm as a prevalent option in
+recent SLM research, while the DyT study demonstrates that a learned,
+bounded element-wise transformation can achieve comparable performance
+to RMSNorm in the evaluated LLaMA configurations. These results do not
+show that all normalization mechanisms have identical effects. Rather,
+they show that the control of activation scale and the suppression of
+extreme values can be implemented through different mathematical
+operations.
+
+Normalization is therefore best understood not merely as a procedure
+for forcing activations to have a prescribed statistical distribution,
+but as a component that affects the numerical behavior and
+differential structure of the transformations composing a deep
+network. Its interaction with residual pathways, attention sublayers,
+and feed-forward transformations determines how intermediate
+representations are passed through the architecture.
+
+With the role of normalization established, the next architectural
+component to examine is attention. Whereas normalization controls
+aspects of the numerical representation within a token, attention
+provides the mechanism through which information is exchanged across
+different token positions. Understanding both operations is necessary
+for reconstructing how a Transformer block processes a sequence.

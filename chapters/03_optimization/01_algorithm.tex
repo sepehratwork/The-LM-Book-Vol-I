@@ -1,0 +1,1765 @@
+% ============================================================================
+% 03_optimization/01_algorithm.tex
+% Section body for inclusion immediately after the corresponding \section
+% command in the master book file. It follows section_body_template.tex.
+% No document-level commands, package imports, \chapter, or \section commands.
+% ============================================================================
+
+The preceding discussion established the mathematical components from which a
+language model is constructed. Those components define a parameterized
+computational function, but they do not by themselves determine the numerical
+values of its trainable parameters. Training requires a procedure that uses
+observed data to modify those parameters so that the model's predictions
+become progressively more consistent with the training objective. This
+procedure is the subject of optimization. In a large language model (LLM),
+optimization is not merely a numerical routine appended to the neural
+architecture: it is a central part of the training system, because its update
+rule determines how information contained in the training data is translated
+into changes in the model.
+
+The central problem is to minimize a loss function over a parameter space
+whose dimension may reach billions. The objective is generally nonconvex,
+gradients are usually estimated from minibatches rather than the complete
+training distribution, and the optimization process must operate within
+constraints imposed by accelerator memory, numerical precision, computation,
+and communication. These properties explain why the development of LLM
+optimizers involves more than selecting a learning rate. It requires decisions
+about which gradient information to retain, how to transform that information
+into parameter updates, what approximation to the local geometry is affordable,
+and how to evaluate progress under a fixed token or wall-clock budget
+\parencite{Bottou2018Optimization,Ranganath2026Navigating}.
+
+\subsection{Optimization as a Statistical Learning Problem}
+\label{subsec:optimization-statistical-learning}
+
+Let $\boldsymbol{\theta}\in\mathbb{R}^{d}$ denote the complete vector of
+trainable parameters of a language model, where $d$ is the number of scalar
+parameters. For an autoregressive language model and a token sequence
+$x_{1:T}=(x_1,\ldots,x_T)$, the joint probability is factorized into
+conditional next-token probabilities:
+
+\begin{equation}
+    p_{\boldsymbol{\theta}}(x_{1:T})
+    =
+    \prod_{t=1}^{T}
+    p_{\boldsymbol{\theta}}(x_t\mid x_{<t}),
+    \label{eq:opt-autoregressive-factorization}
+\end{equation}
+
+where $x_{<t}=(x_1,\ldots,x_{t-1})$ is the context preceding token $x_t$.
+Training by next-token prediction minimizes the expected negative
+log-likelihood under the training distribution $\mathcal{D}$:
+
+\begin{equation}
+    F(\boldsymbol{\theta})
+    =
+    -\mathbb{E}_{x_{1:T}\sim\mathcal{D}}
+    \left[
+        \sum_{t=1}^{T}
+        \log p_{\boldsymbol{\theta}}(x_t\mid x_{<t})
+    \right].
+    \label{eq:opt-expected-nll}
+\end{equation}
+
+This objective is an instance of the expected-risk formulation used in
+statistical learning. More generally, let $\xi$ denote a random training
+observation, which may be a single example or a minibatch, and let
+$f(\boldsymbol{\theta};\xi)$ be the loss evaluated at that observation. The
+expected objective is
+
+\begin{equation}
+    F(\boldsymbol{\theta})
+    =
+    \mathbb{E}_{\xi\sim\mathcal{D}}
+    \left[
+        f(\boldsymbol{\theta};\xi)
+    \right].
+    \label{eq:opt-expected-risk}
+\end{equation}
+
+The distribution $\mathcal{D}$ is not known in complete form. Instead, the
+training procedure has access to a finite dataset
+$\{\xi_1,\ldots,\xi_N\}$. The corresponding empirical objective is
+
+\begin{equation}
+    F_N(\boldsymbol{\theta})
+    =
+    \frac{1}{N}
+    \sum_{i=1}^{N}
+    f(\boldsymbol{\theta};\xi_i),
+    \label{eq:opt-empirical-risk}
+\end{equation}
+
+and the finite-data optimization problem is
+
+\begin{equation}
+    \boldsymbol{\theta}_N^{*}
+    \in
+    \underset{\boldsymbol{\theta}\in\mathbb{R}^{d}}
+    {\operatorname{argmin}}
+    F_N(\boldsymbol{\theta}).
+    \label{eq:opt-empirical-minimization}
+\end{equation}
+
+The expected risk and empirical risk represent different mathematical
+objects. The former measures expected loss under the underlying distribution;
+the latter is the average loss over the available observations. Minimizing
+the empirical objective is therefore a practical approximation to the
+statistical learning problem, not a guarantee that the expected risk has
+also been minimized. The distinction between expected and empirical risk
+is the starting point for the optimization analysis of large-scale machine
+learning \parencite{Bottou2018Optimization}. The autoregressive formulation
+in \cref{eq:opt-autoregressive-factorization,eq:opt-expected-nll} makes this
+general framework specific to language-model pretraining
+\parencite{Ranganath2026Navigating}.
+
+An optimization algorithm constructs a sequence of parameter vectors
+$\boldsymbol{\theta}_1,\boldsymbol{\theta}_2,\ldots$ with the intention of
+reducing the objective. The most basic local information used by
+gradient-based methods is the gradient:
+
+\begin{equation}
+    \nabla F(\boldsymbol{\theta})
+    =
+    \begin{bmatrix}
+        \frac{\partial F}{\partial\theta_1} &
+        \frac{\partial F}{\partial\theta_2} &
+        \cdots &
+        \frac{\partial F}{\partial\theta_d}
+    \end{bmatrix}^{\mathsf{T}}.
+    \label{eq:opt-gradient}
+\end{equation}
+
+The gradient belongs to the same $d$-dimensional vector space as the
+parameters. Its $j$-th component measures the local sensitivity of the
+objective to the $j$-th parameter. For a sufficiently small displacement
+$\Delta\boldsymbol{\theta}$, the first-order Taylor approximation gives
+
+\begin{equation}
+    F(\boldsymbol{\theta}+\Delta\boldsymbol{\theta})
+    \approx
+    F(\boldsymbol{\theta})
+    +
+    \nabla F(\boldsymbol{\theta})^{\mathsf{T}}
+    \Delta\boldsymbol{\theta}.
+    \label{eq:opt-first-order-taylor}
+\end{equation}
+
+Choosing the displacement in the negative-gradient direction,
+
+\begin{equation}
+    \Delta\boldsymbol{\theta}
+    =
+    -\eta\nabla F(\boldsymbol{\theta}),
+    \qquad \eta>0,
+    \label{eq:opt-gradient-displacement}
+\end{equation}
+
+yields the first-order change
+
+\begin{equation}
+    F(\boldsymbol{\theta}+\Delta\boldsymbol{\theta})
+    -
+    F(\boldsymbol{\theta})
+    \approx
+    -\eta\|\nabla F(\boldsymbol{\theta})\|_2^2.
+    \label{eq:opt-first-order-decrease}
+\end{equation}
+
+Thus, the negative gradient is a local descent direction whenever the
+gradient is nonzero. The scalar $\eta$ is the step size or learning rate;
+it controls the magnitude of the displacement. This local argument
+motivates gradient descent, but it does not by itself establish convergence.
+A convergence analysis requires assumptions about how rapidly the gradient
+can change.
+
+A common assumption is that the gradient is Lipschitz continuous. A
+differentiable function has an $L$-Lipschitz gradient if
+
+\begin{equation}
+    \|\nabla F(\boldsymbol{\theta})
+      -\nabla F(\boldsymbol{\theta}')\|_2
+    \leq
+    L\|\boldsymbol{\theta}-\boldsymbol{\theta}'\|_2
+    \label{eq:opt-lipschitz-gradient}
+\end{equation}
+
+for all relevant parameter vectors. Under this assumption, the descent
+lemma states that
+
+\begin{equation}
+    F(\boldsymbol{\theta}')
+    \leq
+    F(\boldsymbol{\theta})
+    +
+    \nabla F(\boldsymbol{\theta})^{\mathsf{T}}
+    (\boldsymbol{\theta}'-\boldsymbol{\theta})
+    +
+    \frac{L}{2}
+    \|\boldsymbol{\theta}'-\boldsymbol{\theta}\|_2^2.
+    \label{eq:opt-descent-lemma}
+\end{equation}
+
+Substituting the gradient-descent update
+$\boldsymbol{\theta}_{t+1}
+=\boldsymbol{\theta}_t-\eta_t\nabla F(\boldsymbol{\theta}_t)$
+into \cref{eq:opt-descent-lemma} gives
+
+\begin{align}
+    F(\boldsymbol{\theta}_{t+1})
+    &\leq
+    F(\boldsymbol{\theta}_t)
+    -
+    \eta_t\|\nabla F(\boldsymbol{\theta}_t)\|_2^2
+    +
+    \frac{L\eta_t^2}{2}
+    \|\nabla F(\boldsymbol{\theta}_t)\|_2^2
+    \nonumber\\
+    &=
+    F(\boldsymbol{\theta}_t)
+    -
+    \eta_t\left(1-\frac{L\eta_t}{2}\right)
+    \|\nabla F(\boldsymbol{\theta}_t)\|_2^2.
+    \label{eq:opt-gradient-descent-bound}
+\end{align}
+
+For $0<\eta_t\leq 1/L$, the coefficient multiplying the squared gradient
+is positive, and the bound guarantees a decrease in the objective whenever
+the gradient is nonzero. This explains why an excessively large learning
+rate can destabilize optimization: the quadratic remainder in the descent
+bound can offset the improvement predicted by the linear term. An
+excessively small learning rate, on the other hand, can make progress
+unnecessarily slow \parencite{Bottou2018Optimization}.
+
+The optimization landscape of a deep neural network is generally nonconvex.
+Consequently, a stationary point satisfying
+$\nabla F(\boldsymbol{\theta})=\mathbf{0}$ need not be a global minimizer.
+It may be a local minimum, a saddle point, or another stationary point.
+Theoretical results for nonconvex stochastic optimization therefore often
+establish convergence toward regions with small gradient norm rather than
+convergence to a global optimum. This distinction is essential when
+interpreting guarantees for the training of Transformer language models
+\parencite{Bottou2018Optimization,Ranganath2026Navigating}.
+
+\subsection{Stochastic and Batch Gradient Methods}
+\label{subsec:optimization-stochastic-batch}
+
+Differentiating the empirical objective in
+\cref{eq:opt-empirical-risk} gives the full gradient
+
+\begin{equation}
+    \nabla F_N(\boldsymbol{\theta})
+    =
+    \frac{1}{N}
+    \sum_{i=1}^{N}
+    \nabla f(\boldsymbol{\theta};\xi_i).
+    \label{eq:opt-full-gradient}
+\end{equation}
+
+A batch-gradient method evaluates this complete sum at every iteration:
+
+\begin{equation}
+    \boldsymbol{\theta}_{t+1}
+    =
+    \boldsymbol{\theta}_t
+    -
+    \eta_t\nabla F_N(\boldsymbol{\theta}_t).
+    \label{eq:opt-batch-gradient}
+\end{equation}
+
+The direction is calculated from all training observations and is therefore
+the exact gradient of the empirical objective. Its disadvantage is
+computational: each update requires processing the complete dataset. When
+the dataset contains an enormous number of sequences and tokens, this
+requirement makes frequent full-gradient evaluations impractical.
+
+Stochastic gradient (SG) methods replace the full gradient with an estimate
+computed from a randomly selected observation. If $i_t$ is sampled uniformly
+from $\{1,\ldots,N\}$, the stochastic gradient is
+
+\begin{equation}
+    \mathbf{g}_t
+    =
+    \nabla f(\boldsymbol{\theta}_t;\xi_{i_t}),
+    \label{eq:opt-stochastic-gradient}
+\end{equation}
+
+and the update is
+
+\begin{equation}
+    \boxed{
+    \boldsymbol{\theta}_{t+1}
+    =
+    \boldsymbol{\theta}_t-\eta_t\mathbf{g}_t.
+    }
+    \label{eq:opt-sgd-update}
+\end{equation}
+
+Under uniform sampling, the estimator is conditionally unbiased:
+
+\begin{equation}
+    \mathbb{E}
+    [\mathbf{g}_t\mid\boldsymbol{\theta}_t]
+    =
+    \nabla F_N(\boldsymbol{\theta}_t).
+    \label{eq:opt-unbiased-gradient}
+\end{equation}
+
+Unbiasedness does not mean that every sampled direction decreases the
+empirical objective. An individual stochastic gradient may point in a
+direction that increases the full objective. It means that the expected
+direction, conditioned on the current parameters, equals the full
+empirical gradient. The iterates are therefore a stochastic process whose
+trajectory depends on the sampled observations
+\parencite{Bottou2018Optimization}.
+
+The difference between the stochastic gradient and its conditional
+expectation is gradient noise. Its covariance matrix is
+
+\begin{equation}
+    \boldsymbol{\Sigma}_t
+    =
+    \mathbb{E}\left[
+       (\mathbf{g}_t-\nabla F_N)
+       (\mathbf{g}_t-\nabla F_N)^{\mathsf{T}}
+       \mid\boldsymbol{\theta}_t
+    \right],
+    \label{eq:opt-gradient-covariance}
+\end{equation}
+
+and its total variance is
+
+\begin{equation}
+    \sigma_t^2
+    =
+    \operatorname{Tr}(\boldsymbol{\Sigma}_t)
+    =
+    \mathbb{E}\left[
+       \|\mathbf{g}_t-\nabla F_N\|_2^2
+       \mid\boldsymbol{\theta}_t
+    \right].
+    \label{eq:opt-gradient-variance}
+\end{equation}
+
+The diagonal entries of $\boldsymbol{\Sigma}_t$ describe coordinate-wise
+variances, while its off-diagonal entries describe correlations between
+gradient coordinates. In high-dimensional neural networks, these
+correlations need not vanish. The covariance therefore contains information
+about the statistical structure of gradient noise, not merely the magnitude
+of each individual coordinate.
+
+For an unbiased estimator,
+
+\begin{equation}
+    \mathbb{E}
+    [\|\mathbf{g}_t\|_2^2\mid\boldsymbol{\theta}_t]
+    =
+    \|\nabla F_N(\boldsymbol{\theta}_t)\|_2^2+\sigma_t^2.
+    \label{eq:opt-second-moment-decomposition}
+\end{equation}
+
+Combining this identity with the descent lemma gives, under the same
+smoothness assumptions,
+
+\begin{align}
+    \mathbb{E}
+    [F_N(\boldsymbol{\theta}_{t+1})\mid\boldsymbol{\theta}_t]
+    \leq\;&
+    F_N(\boldsymbol{\theta}_t)
+    -
+    \eta_t\left(1-\frac{L\eta_t}{2}\right)
+    \|\nabla F_N(\boldsymbol{\theta}_t)\|_2^2
+    \nonumber\\
+    &+
+    \frac{L\eta_t^2}{2}\sigma_t^2.
+    \label{eq:opt-stochastic-descent-bound}
+\end{align}
+
+The negative term represents expected progress in the gradient direction;
+the positive term represents the adverse contribution of stochastic
+variance. This inequality makes explicit why learning-rate selection and
+noise control are central to stochastic optimization.
+
+In large-scale neural-network training, gradients are commonly estimated
+using a minibatch. For a minibatch $\mathcal{B}_t$ containing $B$ sampled
+observations,
+
+\begin{equation}
+    \mathbf{g}_t
+    =
+    \frac{1}{B}
+    \sum_{i\in\mathcal{B}_t}
+    \nabla f(\boldsymbol{\theta}_t;\xi_i).
+    \label{eq:opt-minibatch-gradient}
+\end{equation}
+
+When observations are sampled independently and have finite variance
+$\sigma^2$, the variance of the minibatch mean is
+
+\begin{equation}
+    \operatorname{Var}(\mathbf{g}_t)
+    =
+    \frac{\sigma^2}{B}.
+    \label{eq:opt-minibatch-variance}
+\end{equation}
+
+Increasing $B$ therefore reduces the variance of the gradient estimate.
+However, it also increases the work performed to calculate one update.
+The reduction in noise must be considered together with the computational
+cost of processing a larger minibatch. Minibatches also provide an
+important systems advantage: they expose parallel computation and allow
+accelerators to process many training examples efficiently
+\parencite{Bottou2018Optimization,Ranganath2026Navigating}.
+
+For strongly convex objectives, stochastic-gradient methods with a constant
+step size generally approach a neighborhood of the minimizer when gradient
+noise remains nonzero. The neighborhood reflects a balance between
+contraction toward the optimum and the variance introduced by stochastic
+updates. A diminishing step-size sequence can reduce the asymptotic effect
+of this noise. A classical sufficient condition is
+
+\begin{equation}
+    \sum_{t=1}^{\infty}\eta_t=\infty,
+    \qquad
+    \sum_{t=1}^{\infty}\eta_t^2<\infty.
+    \label{eq:opt-robbins-monro-steps}
+\end{equation}
+
+The first condition prevents the cumulative step sizes from becoming
+finite, while the second controls the accumulated effect of stochastic
+noise. Under the assumptions developed by Bottou, Curtis, and Nocedal,
+diminishing step sizes yield an $O(1/t)$ expected optimality-gap rate for
+strongly convex objectives \parencite{Bottou2018Optimization}.
+
+For nonconvex objectives, the relevant theoretical quantity is often the
+squared gradient norm. Under the assumptions of the stochastic-gradient
+analysis in \textcite{Bottou2018Optimization}, a fixed sufficiently small
+step size gives a bound of the general form
+
+\begin{equation}
+    \frac{1}{K}
+    \sum_{t=1}^{K}
+    \mathbb{E}
+    \left[
+        \|\nabla F(\boldsymbol{\theta}_t)\|_2^2
+    \right]
+    \leq
+    C_1\eta+
+    \frac{C_2}{K\eta},
+    \label{eq:opt-nonconvex-stationarity}
+\end{equation}
+
+where $C_1$ depends on the noise and smoothness bounds and $C_2$ depends
+on the initial objective gap and the lower bound on the objective. The
+first term reflects the residual effect of stochastic noise; the second
+decreases with the number of iterations. This result does not guarantee a
+global minimum. It shows that the algorithm spends an increasing fraction
+of its iterations in regions where the objective has a relatively small
+gradient.
+
+\paragraph{Noise-reduction methods.}
+The variance in a stochastic direction can be reduced without abandoning
+the computational advantages of stochastic optimization. Dynamic
+sample-size methods increase the number of observations used to estimate
+the gradient as training progresses. They can use inexpensive estimates
+during early optimization and more accurate estimates when the algorithm
+approaches a stationary region.
+
+Gradient-aggregation methods retain information from earlier iterations.
+For example, the stochastic variance-reduced gradient (SVRG) estimator
+uses a reference point $\widetilde{\boldsymbol{\theta}}$ and the full
+gradient at that reference point:
+
+\begin{equation}
+    \mathbf{g}_t^{\mathrm{SVRG}}
+    =
+    \nabla f_{i_t}(\boldsymbol{\theta}_t)
+    -
+    \nabla f_{i_t}(\widetilde{\boldsymbol{\theta}})
+    +
+    \nabla F_N(\widetilde{\boldsymbol{\theta}}).
+    \label{eq:opt-svrg}
+\end{equation}
+
+Taking the conditional expectation over $i_t$ gives
+$\mathbb{E}[\mathbf{g}_t^{\mathrm{SVRG}}]
+=\nabla F_N(\boldsymbol{\theta}_t)$.
+The correction term removes the sampled gradient contribution evaluated
+at the reference point and replaces it with the full reference gradient.
+When the current iterate is close to the reference point, this construction
+can substantially reduce variance. SAGA and stochastic average gradient
+(SAG) are related gradient-aggregation approaches that retain historical
+gradient information. Iterate averaging is another variance-reduction
+strategy; it forms an average of iterates rather than relying only on the
+most recent parameter vector:
+
+\begin{equation}
+    \overline{\boldsymbol{\theta}}_T
+    =
+    \frac{1}{T}
+    \sum_{t=1}^{T}\boldsymbol{\theta}_t.
+    \label{eq:opt-iterate-average}
+\end{equation}
+
+These methods are important in the broader theory of large-scale
+optimization, although their memory and data-access requirements must be
+considered before applying them to very large language-model training
+\parencite{Bottou2018Optimization}.
+
+\subsection{First-Order and Adaptive Optimization Algorithms}
+\label{subsec:optimization-first-order}
+
+A first-order optimizer constructs its update primarily from gradient
+information rather than explicitly forming and inverting the Hessian.
+A general update can be written as
+
+\begin{equation}
+    \boldsymbol{\theta}_{t+1}
+    =
+    \boldsymbol{\theta}_t-\eta_t\mathbf{u}_t,
+    \label{eq:opt-general-update}
+\end{equation}
+
+where $\mathbf{u}_t$ is a direction derived from the current gradient and,
+possibly, information retained from previous iterations. The algorithms
+in this family differ in how they construct $\mathbf{u}_t$ and how much
+additional state they store.
+
+\paragraph{Stochastic gradient descent and momentum.}
+The simplest first-order method uses the stochastic gradient directly:
+
+\begin{equation}
+    \boldsymbol{\theta}_{t+1}
+    =
+    \boldsymbol{\theta}_t-\eta_t\mathbf{g}_t.
+    \label{eq:opt-sgd}
+\end{equation}
+
+Its principal advantage is its small memory overhead: it does not require
+additional per-parameter optimizer state. Its limitation is that one
+scalar learning rate is applied to all coordinates. In an LLM, embeddings,
+attention projections, feed-forward matrices, and normalization parameters
+can have different gradient statistics, so a single global learning rate
+may not be equally appropriate for every parameter group
+\parencite{Ranganath2026Navigating}.
+
+Momentum introduces a velocity vector that accumulates gradient
+information:
+
+\begin{align}
+    \mathbf{v}_t
+    &=
+    \beta\mathbf{v}_{t-1}+\mathbf{g}_t,
+    \label{eq:opt-momentum-state}\\
+    \boldsymbol{\theta}_{t+1}
+    &=
+    \boldsymbol{\theta}_t-\eta_t\mathbf{v}_t.
+    \label{eq:opt-momentum-update}
+\end{align}
+
+Here, $\beta\in[0,1)$ controls the influence of previous gradients. By
+smoothing short-term fluctuations, momentum can reduce oscillation and
+improve progress in poorly conditioned landscapes. It does not, however,
+provide coordinate-wise learning-rate adaptation
+\parencite{Bottou2018Optimization,Ranganath2026Navigating}.
+
+\paragraph{Adaptive diagonal preconditioning.}
+Adaptive optimizers can be interpreted as diagonal preconditioned
+gradient methods. A diagonal preconditioner rescales each coordinate
+independently, without representing cross-coordinate correlations.
+
+AdaGrad accumulates squared gradients:
+
+\begin{align}
+    \mathbf{s}_t
+    &=
+    \mathbf{s}_{t-1}
+    +
+    \mathbf{g}_t\odot\mathbf{g}_t,
+    \label{eq:opt-adagrad-state}\\
+    \boldsymbol{\theta}_{t+1}
+    &=
+    \boldsymbol{\theta}_t
+    -
+    \eta_t
+    \frac{\mathbf{g}_t}{\sqrt{\mathbf{s}_t}+\epsilon}.
+    \label{eq:opt-adagrad-update}
+\end{align}
+
+The symbol $\odot$ denotes element-wise multiplication, and division and
+square roots in vector expressions are also element-wise. Coordinates
+with large accumulated squared gradients receive smaller effective
+learning rates. This behavior is useful when gradient scales are
+heterogeneous or sparse. Because the accumulator grows monotonically,
+however, the effective learning rates can become very small over long
+training runs.
+
+RMSProp replaces the cumulative sum with an exponential moving average:
+
+\begin{equation}
+    \mathbf{v}_t
+    =
+    \beta_2\mathbf{v}_{t-1}
+    +(1-\beta_2)(\mathbf{g}_t\odot\mathbf{g}_t),
+    \label{eq:opt-rmsprop-state}
+\end{equation}
+
+and uses
+
+\begin{equation}
+    \boldsymbol{\theta}_{t+1}
+    =
+    \boldsymbol{\theta}_t
+    -
+    \eta_t
+    \frac{\mathbf{g}_t}{\sqrt{\mathbf{v}_t}+\epsilon}.
+    \label{eq:opt-rmsprop-update}
+\end{equation}
+
+The exponential average gives greater weight to recent gradient
+magnitudes, allowing the coordinate-wise scaling to adapt as the
+optimization dynamics change \parencite{Ranganath2026Navigating}.
+
+\paragraph{Adam.}
+Adam combines momentum with adaptive second-moment scaling. It maintains
+a first-moment estimate and a second-moment estimate:
+
+\begin{align}
+    \mathbf{m}_t
+    &=
+    \beta_1\mathbf{m}_{t-1}
+    +(1-\beta_1)\mathbf{g}_t,
+    \label{eq:opt-adam-first-moment}\\
+    \mathbf{v}_t
+    &=
+    \beta_2\mathbf{v}_{t-1}
+    +(1-\beta_2)(\mathbf{g}_t\odot\mathbf{g}_t).
+    \label{eq:opt-adam-second-moment}
+\end{align}
+
+Because both estimates are initialized at zero, they are biased toward
+zero during early iterations. Adam corrects this initialization bias by
+using
+
+\begin{align}
+    \widehat{\mathbf{m}}_t
+    &=
+    \frac{\mathbf{m}_t}{1-\beta_1^t},
+    \label{eq:opt-adam-mhat}\\
+    \widehat{\mathbf{v}}_t
+    &=
+    \frac{\mathbf{v}_t}{1-\beta_2^t}.
+    \label{eq:opt-adam-vhat}
+\end{align}
+
+The parameter update is
+
+\begin{equation}
+    \boldsymbol{\theta}_{t+1}
+    =
+    \boldsymbol{\theta}_t
+    -
+    \eta_t
+    \frac{\widehat{\mathbf{m}}_t}
+    {\sqrt{\widehat{\mathbf{v}}_t}+\epsilon}.
+    \label{eq:opt-adam-update}
+\end{equation}
+
+The first moment provides a smoothed update direction, while the second
+moment provides coordinate-wise scaling based on historical gradient
+magnitudes. Adam therefore combines two mechanisms that are separate in
+ordinary SGD: directional smoothing and adaptive effective learning
+rates \parencite{Ranganath2026Navigating}.
+
+\paragraph{AdamW and decoupled weight decay.}
+Weight decay regularizes parameter magnitudes. In ordinary gradient
+descent, adding an $\ell_2$ penalty
+$\frac{\lambda}{2}\|\boldsymbol{\theta}\|_2^2$ to the objective adds
+$\lambda\boldsymbol{\theta}$ to its gradient. The resulting update can
+be written as
+
+\begin{equation}
+    \boldsymbol{\theta}_{t+1}
+    =
+    (1-\eta_t\lambda)\boldsymbol{\theta}_t
+    -
+    \eta_t\nabla F(\boldsymbol{\theta}_t).
+    \label{eq:opt-l2-decay-sgd}
+\end{equation}
+
+For an adaptive optimizer, including the penalty in the gradient causes
+the regularization term to be transformed by the adaptive preconditioner.
+Its effective strength then depends on the optimizer's coordinate-wise
+statistics. AdamW separates the decay operation from the adaptive
+gradient update:
+
+\begin{equation}
+    \boxed{
+    \boldsymbol{\theta}_{t+1}
+    =
+    (1-\eta_t\lambda)\boldsymbol{\theta}_t
+    -
+    \eta_t
+    \frac{\widehat{\mathbf{m}}_t}
+    {\sqrt{\widehat{\mathbf{v}}_t}+\epsilon}.
+    }
+    \label{eq:opt-adamw-update}
+\end{equation}
+
+Here, $\lambda$ is the decoupled weight-decay coefficient. The separation
+allows the adaptive update and the regularization strength to be tuned
+more independently. AdamW is the principal baseline in the supplied
+LLM-optimizer survey and in the later systematic pretraining comparison
+\parencite{Ranganath2026Navigating,Wen2026Fantastic}.
+
+The optimizer update is used together with a learning-rate schedule.
+A common schedule begins with warmup and then decays the learning rate.
+For linear warmup,
+
+\begin{equation}
+    \eta_t
+    =
+    \eta_{\max}\frac{t}{T_{\mathrm{warmup}}},
+    \qquad
+    0\leq t\leq T_{\mathrm{warmup}}.
+    \label{eq:opt-linear-warmup}
+\end{equation}
+
+A cosine decay phase can then be written as
+
+\begin{equation}
+    \eta_t
+    =
+    \eta_{\min}
+    +
+    \frac{\eta_{\max}-\eta_{\min}}{2}
+    \left[
+        1+
+        \cos\left(
+            \pi
+            \frac{t-T_{\mathrm{warmup}}}
+            {T-T_{\mathrm{warmup}}}
+        \right)
+    \right].
+    \label{eq:opt-cosine-decay}
+\end{equation}
+
+Warmup is especially relevant to adaptive optimizers because their moment
+estimates are initially inaccurate. Large early updates can destabilize
+training in large Transformer models. Gradient clipping is another
+stability mechanism. For a global clipping threshold $\tau$, the clipped
+gradient is
+
+\begin{equation}
+    \widetilde{\mathbf{g}}_t
+    =
+    \mathbf{g}_t
+    \min\left(
+        1,\frac{\tau}{\|\mathbf{g}_t\|_2}
+    \right).
+    \label{eq:opt-gradient-clipping}
+\end{equation}
+
+When the gradient norm is below $\tau$, the gradient is unchanged; when
+it exceeds $\tau$, its norm is reduced to $\tau$. In practice, AdamW
+training is also affected by the numerical stabilizer $\epsilon$, the
+moment coefficients, parameter-specific weight-decay exclusions, and
+the precision used to store parameters and optimizer states
+\parencite{Ranganath2026Navigating}.
+
+\subsection{Memory-Efficient and Alternative Update Rules}
+\label{subsec:optimization-memory-efficient}
+
+The two moment vectors maintained by AdamW require memory proportional
+to the number of model parameters. If each state element is stored in
+32-bit floating-point precision, the two vectors require
+
+\begin{equation}
+    M_{\mathrm{states}}
+    =
+    2d\times4
+    =
+    8d\ \text{bytes}.
+    \label{eq:opt-adam-state-memory}
+\end{equation}
+
+For a model with one billion parameters, this is approximately
+$8$ gigabytes for the first and second moments alone. This excludes
+model weights, gradients, activations, temporary buffers, and
+distributed-training overhead. A simplified mixed-precision accounting
+that includes low-precision parameters and gradients, 32-bit master
+parameters, and the two 32-bit Adam states can reach approximately
+$16d$ bytes \parencite{Ranganath2026Navigating}.
+
+\paragraph{Adafactor and factored second moments.}
+Adafactor reduces the storage required for adaptive second-moment
+statistics by exploiting the matrix structure of a parameter tensor.
+For a matrix $\mathbf{W}\in\mathbb{R}^{m\times n}$, a full coordinate-wise
+second-moment accumulator contains $mn$ entries. Adafactor instead
+maintains row and column statistics with $m$ and $n$ entries,
+respectively. In a factored approximation, the estimated second-moment
+matrix is reconstructed from these lower-dimensional statistics.
+The state storage therefore scales as $O(m+n)$ rather than $O(mn)$.
+This reduces memory, at the cost of replacing independent statistics
+for every matrix entry with a structured approximation
+\parencite{Ranganath2026Navigating}.
+
+\paragraph{Low-precision and grouped optimizer states.}
+Low-bit optimizer methods reduce memory by representing optimizer
+statistics with fewer bits. Block-wise quantization partitions a
+state tensor into blocks and quantizes values relative to block-level
+scales. The resulting approximation error must be controlled because
+the moment estimates directly influence update magnitudes.
+
+Adam-mini reduces the number of independent adaptive statistics by
+grouping parameters and sharing adaptive information within groups.
+Its motivation is that maintaining an independent learning-rate
+statistic for every parameter can be redundant. LOMO takes a different
+systems-oriented approach by fusing gradient computation and parameter
+updates, reducing the need to retain conventional gradient and optimizer
+state tensors simultaneously. These methods reduce different components
+of the memory and execution burden, and their trade-offs must be
+evaluated in the context of the training implementation
+\parencite{Ranganath2026Navigating}.
+
+\paragraph{Lion and sign-based updates.}
+Lion replaces adaptive second-moment normalization with a sign-based
+update derived from a momentum-like quantity. A representative form is
+
+\begin{align}
+    \mathbf{u}_t
+    &=
+    \beta_1\mathbf{m}_{t-1}
+    +(1-\beta_1)\mathbf{g}_t,
+    \label{eq:opt-lion-direction}\\
+    \boldsymbol{\theta}_{t+1}
+    &=
+    (1-\eta_t\lambda)\boldsymbol{\theta}_t
+    -
+    \eta_t\operatorname{sign}(\mathbf{u}_t),
+    \label{eq:opt-lion-update}\\
+    \mathbf{m}_t
+    &=
+    \beta_2\mathbf{m}_{t-1}
+    +(1-\beta_2)\mathbf{g}_t.
+    \label{eq:opt-lion-state}
+\end{align}
+
+The sign function is applied element-wise. It returns $-1$, $0$, or $1$
+according to the sign of its argument. Unlike AdamW, which rescales
+each coordinate according to a second-moment estimate, Lion primarily
+retains directional information in the update. It therefore removes
+the need for an Adam-style second-moment vector, but its effective
+update magnitude is controlled differently and requires its own
+learning-rate and weight-decay tuning
+\parencite{Ranganath2026Navigating,Wen2026Fantastic}.
+
+\paragraph{Large-batch optimization.}
+Large minibatches can improve accelerator utilization and reduce
+gradient variance, but the optimization dynamics may change as the
+batch size increases. LAMB introduces layer-wise trust ratios to
+scale updates according to the relative norms of parameters and
+their proposed updates. For a layer with parameters
+$\mathbf{w}_{\ell}$ and an Adam-derived update direction
+$\mathbf{u}_{\ell}$, the trust ratio has the form
+
+\begin{equation}
+    r_{\ell}
+    =
+    \frac{\|\mathbf{w}_{\ell}\|_2}
+         {\|\mathbf{u}_{\ell}\|_2},
+    \label{eq:opt-lamb-trust-ratio}
+\end{equation}
+
+with practical implementations including stabilizing details for
+small denominators and weight decay. The layer-wise scaling changes
+the relative magnitude of updates across layers and is intended to
+support large-batch training. It also illustrates that an optimizer's
+behavior depends on the interaction between its update rule, batch
+size, and parameter-group structure
+\parencite{Ranganath2026Navigating}.
+
+\subsection{Curvature-Aware and Second-Order Optimization}
+\label{subsec:optimization-second-order}
+
+The gradient describes the first-order sensitivity of the objective,
+but it does not fully describe the local geometry of the optimization
+landscape. For a twice-differentiable objective, the second-order
+Taylor approximation is
+
+\begin{equation}
+    F(\boldsymbol{\theta}_t+\Delta\boldsymbol{\theta})
+    \approx
+    F(\boldsymbol{\theta}_t)
+    +
+    \mathbf{g}_t^{\mathsf{T}}\Delta\boldsymbol{\theta}
+    +
+    \frac{1}{2}
+    \Delta\boldsymbol{\theta}^{\mathsf{T}}
+    \mathbf{H}_t
+    \Delta\boldsymbol{\theta},
+    \label{eq:opt-second-order-taylor}
+\end{equation}
+
+where $\mathbf{g}_t=\nabla F(\boldsymbol{\theta}_t)$ and
+
+\begin{equation}
+    \mathbf{H}_t
+    =
+    \nabla_{\boldsymbol{\theta}}^2F(\boldsymbol{\theta}_t)
+    \label{eq:opt-hessian}
+\end{equation}
+
+is the Hessian. The Hessian is a $d\times d$ matrix whose $(i,j)$ entry
+is the second partial derivative
+$\partial^2F/(\partial\theta_i\partial\theta_j)$. Its diagonal entries
+describe curvature along individual coordinates, while its
+off-diagonal entries describe interactions between parameter
+coordinates.
+
+If the Hessian is positive definite, minimizing the quadratic
+approximation in \cref{eq:opt-second-order-taylor} gives
+
+\begin{equation}
+    \mathbf{H}_t\Delta\boldsymbol{\theta}_t
+    =
+    -\mathbf{g}_t,
+    \qquad
+    \Delta\boldsymbol{\theta}_t
+    =
+    -\mathbf{H}_t^{-1}\mathbf{g}_t.
+    \label{eq:opt-newton-step}
+\end{equation}
+
+This is the Newton step. The inverse Hessian rescales the gradient
+according to local curvature. To understand this effect, consider the
+eigendecomposition of a symmetric positive-definite Hessian:
+
+\begin{equation}
+    \mathbf{H}
+    =
+    \mathbf{Q}\boldsymbol{\Lambda}\mathbf{Q}^{\mathsf{T}},
+    \qquad
+    \boldsymbol{\Lambda}
+    =
+    \operatorname{diag}(\lambda_1,\ldots,\lambda_d).
+    \label{eq:opt-hessian-eigendecomposition}
+\end{equation}
+
+The columns of $\mathbf{Q}$ are orthonormal curvature directions, and
+the eigenvalues describe curvature magnitudes along those directions.
+The condition number is
+
+\begin{equation}
+    \kappa(\mathbf{H})
+    =
+    \frac{\lambda_{\max}(\mathbf{H})}
+         {\lambda_{\min}(\mathbf{H})}.
+    \label{eq:opt-hessian-condition}
+\end{equation}
+
+A large condition number indicates that curvature varies substantially
+across directions. Gradient descent must use a learning rate small
+enough for the steep directions, which can make progress slow in
+shallow directions. Newton's method attempts to compensate by scaling
+each eigendirection inversely to its curvature.
+
+Exact Newton optimization is infeasible for a model with billions of
+parameters. A Hessian with $d^2$ entries requires $O(d^2)$ storage, and
+constructing or factorizing it is also computationally prohibitive.
+For $d=10^9$, the matrix contains $10^{18}$ entries; at four bytes per
+entry, its storage alone would be approximately $4\times10^{18}$ bytes.
+Large-scale methods must therefore approximate or avoid explicit
+Hessian construction \parencite{Bottou2018Optimization,Ranganath2026Navigating}.
+
+\paragraph{Quasi-Newton and Hessian-free methods.}
+Quasi-Newton methods approximate curvature using changes in parameters
+and gradients. Define
+
+\begin{align}
+    \mathbf{s}_t
+    &=
+    \boldsymbol{\theta}_{t+1}-\boldsymbol{\theta}_t,
+    \label{eq:opt-quasinewton-s}\\
+    \mathbf{y}_t
+    &=
+    \mathbf{g}_{t+1}-\mathbf{g}_t.
+    \label{eq:opt-quasinewton-y}
+\end{align}
+
+The pair $(\mathbf{s}_t,\mathbf{y}_t)$ contains information about how
+the gradient changes along the recent parameter displacement. BFGS
+uses such pairs to update an approximation of the inverse Hessian.
+Limited-memory BFGS (L-BFGS) retains only a finite history of these
+pairs rather than storing a complete dense matrix. Stochastic
+minibatches complicate these methods because gradient differences
+contain sampling noise, and line searches or synchronization can
+introduce additional cost.
+
+Hessian-free methods avoid explicitly forming the Hessian and instead
+use iterative procedures to approximate a Newton-like direction.
+Bottou, Curtis, and Nocedal review both stochastic quasi-Newton and
+Hessian-free approaches as attempts to retain useful curvature
+information while controlling computational cost
+\parencite{Bottou2018Optimization}.
+
+\paragraph{Curvature estimation in language-model optimizers.}
+Sophia is a curvature-aware optimizer discussed in the supplied
+LLM-optimizer survey. It combines momentum information with an
+estimate of diagonal curvature and clips the resulting
+curvature-normalized update. The curvature estimate is intended to
+provide information that is not identical to the historical
+squared-gradient statistics used by Adam. The clipping operation
+limits excessively large coordinate-wise updates. Sophia is an
+example of an approach that introduces approximate second-order
+information without constructing the complete Hessian
+\parencite{Ranganath2026Navigating}.
+
+\subsection{Structured Matrix and Tensor Preconditioning: Shampoo}
+\label{subsec:optimization-shampoo}
+
+The previous discussion shows that a full Hessian or full-dimensional
+preconditioner is too expensive for large neural networks. Diagonal
+adaptive methods avoid this cost by treating coordinates independently,
+but this discards correlations between different entries of a parameter
+matrix. Transformer layers contain matrix-valued parameters, so a
+natural alternative is to retain matrix structure while approximating
+the full preconditioner. Shampoo, introduced by Gupta, Koren, and
+Singer, follows this approach by maintaining one preconditioning
+matrix for each tensor dimension \parencite{Gupta2018Shampoo}.
+
+Consider a matrix parameter
+$\mathbf{W}\in\mathbb{R}^{m\times n}$ with gradient
+$\mathbf{G}_t\in\mathbb{R}^{m\times n}$. A full preconditioner for the
+vectorized gradient would have dimension $mn\times mn$ and require
+$O(m^2n^2)$ storage. Shampoo instead maintains a left preconditioner
+$\mathbf{L}_t\in\mathbb{R}^{m\times m}$ and a right preconditioner
+$\mathbf{R}_t\in\mathbb{R}^{n\times n}$:
+
+\begin{align}
+    \mathbf{L}_t
+    &=
+    \mathbf{L}_{t-1}
+    +
+    \mathbf{G}_t\mathbf{G}_t^{\mathsf{T}},
+    \label{eq:opt-shampoo-left}\\
+    \mathbf{R}_t
+    &=
+    \mathbf{R}_{t-1}
+    +
+    \mathbf{G}_t^{\mathsf{T}}\mathbf{G}_t.
+    \label{eq:opt-shampoo-right}
+\end{align}
+
+A positive regularization term is commonly used in the initialization,
+for example
+$\mathbf{L}_0=\epsilon\mathbf{I}_m$ and
+$\mathbf{R}_0=\epsilon\mathbf{I}_n$. The left matrix accumulates
+row-wise gradient correlations: its $(i,j)$ entry is the inner product
+between rows $i$ and $j$ of the gradient. The right matrix similarly
+accumulates column-wise gradient correlations.
+
+Both matrices are positive semidefinite because, for any
+$\mathbf{x}\in\mathbb{R}^{m}$,
+
+\begin{equation}
+    \mathbf{x}^{\mathsf{T}}
+    \mathbf{G}_t\mathbf{G}_t^{\mathsf{T}}\mathbf{x}
+    =
+    \|\mathbf{G}_t^{\mathsf{T}}\mathbf{x}\|_2^2
+    \geq0,
+    \label{eq:opt-shampoo-psd}
+\end{equation}
+
+and the same argument applies to
+$\mathbf{G}_t^{\mathsf{T}}\mathbf{G}_t$. Regularization makes the
+preconditioners positive definite, allowing inverse fractional matrix
+powers to be defined.
+
+For a symmetric positive-definite matrix
+$\mathbf{A}=\mathbf{Q}\boldsymbol{\Lambda}\mathbf{Q}^{\mathsf{T}}$,
+a fractional power is defined spectrally:
+
+\begin{equation}
+    \mathbf{A}^{\alpha}
+    =
+    \mathbf{Q}\boldsymbol{\Lambda}^{\alpha}\mathbf{Q}^{\mathsf{T}}.
+    \label{eq:opt-matrix-fractional-power}
+\end{equation}
+
+In particular,
+$\mathbf{A}^{-1/4}
+=\mathbf{Q}\operatorname{diag}(\lambda_i^{-1/4})\mathbf{Q}^{\mathsf{T}}$.
+This operation rotates into the eigenbasis, rescales each eigendirection,
+and rotates back. The original matrix form of Shampoo uses the update
+
+\begin{equation}
+    \boxed{
+    \mathbf{W}_{t+1}
+    =
+    \mathbf{W}_t
+    -
+    \eta_t
+    \mathbf{L}_t^{-1/4}
+    \mathbf{G}_t
+    \mathbf{R}_t^{-1/4}.
+    }
+    \label{eq:opt-shampoo-matrix-update}
+\end{equation}
+
+Left multiplication transforms the row geometry, and right multiplication
+transforms the column geometry. Unlike a diagonal optimizer, the
+transformation can mix information across coordinates within each matrix
+dimension.
+
+The relationship to a full preconditioner can be seen through the
+Kronecker product. With a conventional column-major vectorization,
+the identity
+
+\begin{equation}
+    \operatorname{vec}(\mathbf{A}\mathbf{G}\mathbf{B})
+    =
+    (\mathbf{B}^{\mathsf{T}}\otimes\mathbf{A})
+    \operatorname{vec}(\mathbf{G})
+    \label{eq:opt-vec-kronecker}
+\end{equation}
+
+implies that the Shampoo matrix update applies the structured
+preconditioner
+
+\begin{equation}
+    \mathbf{R}_t^{-1/4}\otimes\mathbf{L}_t^{-1/4}
+    \label{eq:opt-shampoo-kronecker}
+\end{equation}
+
+to the vectorized gradient. The Kronecker product is not explicitly
+constructed; its action is obtained by two matrix multiplications.
+The storage requirement is therefore $O(m^2+n^2)$ rather than
+$O(m^2n^2)$. Exact eigendecompositions or matrix-root computations
+nevertheless have costs that scale cubically with the individual
+matrix dimensions, which motivates practical approximations and
+infrequent updates \parencite{Gupta2018Shampoo,Vyas2025SOAP}.
+
+Shampoo generalizes from matrices to a tensor
+$\mathcal{G}_t\in
+\mathbb{R}^{n_1\times\cdots\times n_k}$ of order $k$. Let
+$\mathbf{G}^{(i)}_t$ denote the matricization of the tensor along
+mode $i$, with shape $n_i\times n_{-i}$, where
+$n_{-i}=\prod_{j\ne i}n_j$. The preconditioner for mode $i$ is
+
+\begin{equation}
+    \mathbf{H}_{t,i}
+    =
+    \mathbf{H}_{t-1,i}
+    +
+    \mathbf{G}^{(i)}_t
+    \left(\mathbf{G}^{(i)}_t\right)^{\mathsf{T}}.
+    \label{eq:opt-shampoo-tensor-preconditioner}
+\end{equation}
+
+The gradient is transformed along each tensor mode:
+
+\begin{equation}
+    \widetilde{\mathcal{G}}_t
+    =
+    \mathcal{G}_t
+    \times_1\mathbf{H}_{t,1}^{-1/(2k)}
+    \times_2\mathbf{H}_{t,2}^{-1/(2k)}
+    \cdots
+    \times_k\mathbf{H}_{t,k}^{-1/(2k)},
+    \label{eq:opt-shampoo-tensor-transform}
+\end{equation}
+
+where $\times_i$ denotes multiplication along mode $i$. When $k=2$,
+the exponent becomes $-1/4$, recovering the matrix formulation.
+The corresponding parameter update is
+
+\begin{equation}
+    \mathcal{W}_{t+1}
+    =
+    \mathcal{W}_t-\eta_t\widetilde{\mathcal{G}}_t.
+    \label{eq:opt-shampoo-tensor-update}
+\end{equation}
+
+The preconditioner storage is proportional to
+$O(\sum_{i=1}^{k}n_i^2)$, rather than the square of the total number
+of tensor entries. The method can use diagonal preconditioning for
+dimensions whose full matrix preconditioners would be too expensive.
+The approximation is structured: it retains correlations within each
+tensor dimension but does not represent arbitrary correlations between
+different parameter tensors \parencite{Gupta2018Shampoo}.
+
+The original Shampoo analysis is carried out in online convex
+optimization. For matrix gradients of rank at most $r$, Gupta, Koren,
+and Singer establish a regret bound of the form
+
+\begin{equation}
+    \sum_{t=1}^{T} f_t(\mathbf{W}_t)
+    -
+    \sum_{t=1}^{T} f_t(\mathbf{W}^{*})
+    \leq
+    \sqrt{2r}\,D\,
+    \operatorname{Tr}(\mathbf{L}_T^{1/4})
+    \operatorname{Tr}(\mathbf{R}_T^{1/4}),
+    \label{eq:opt-shampoo-regret}
+\end{equation}
+
+where
+
+\begin{align}
+    \mathbf{L}_T
+    &=
+    \epsilon\mathbf{I}_m+
+    \sum_{t=1}^{T}\mathbf{G}_t\mathbf{G}_t^{\mathsf{T}},
+    \label{eq:opt-shampoo-LT}\\
+    \mathbf{R}_T
+    &=
+    \epsilon\mathbf{I}_n+
+    \sum_{t=1}^{T}\mathbf{G}_t^{\mathsf{T}}\mathbf{G}_t,
+    \label{eq:opt-shampoo-RT}\\
+    D
+    &=
+    \max_{t\in\{1,\ldots,T\}}
+    \|\mathbf{W}_t-\mathbf{W}^{*}\|_F.
+    \label{eq:opt-shampoo-D}
+\end{align}
+
+Here, $\mathbf{W}^{*}$ is a comparator matrix and $\|\cdot\|_F$
+denotes the Frobenius norm. Under the paper's assumptions, the regret
+has the optimal $O(\sqrt{T})$ dependence for online convex
+optimization. This is a convex online guarantee; it is not a proof
+of global convergence for nonconvex Transformer training
+\parencite{Gupta2018Shampoo}.
+
+The original algorithm's matrix-root computations can introduce
+substantial overhead if performed at every iteration. Practical
+implementations therefore use engineering choices such as periodic
+preconditioner-root updates, momentum, and diagonal approximations for
+very large dimensions. Shampoo's experiments include a language-model
+setting with an attention model of approximately $9.8$ million
+parameters on the LM1B benchmark. These experiments demonstrate the
+potential of structured preconditioning, but they should not be
+interpreted as a direct guarantee of the same speedup at contemporary
+billion-parameter scales \parencite{Gupta2018Shampoo}.
+
+\subsection{SOAP: Adam in the Shampoo Eigenbasis}
+\label{subsec:optimization-soap}
+
+Shampoo uses matrix-valued preconditioners, but recomputing their
+eigenvectors or matrix roots can be expensive. Computing these
+quantities less frequently reduces overhead, although the preconditioner
+basis then becomes stale between updates. SOAP, introduced by Vyas
+and colleagues, addresses this issue by running Adam in the
+preconditioner's eigenbasis and continuing to update the Adam
+second-moment statistics between basis refreshes
+\parencite{Vyas2025SOAP}.
+
+For a matrix-valued layer, let the batch gradient be
+$\mathbf{G}_t\in\mathbb{R}^{m\times n}$. Consider the expected
+left and right gradient covariance matrices
+
+\begin{align}
+    \mathbf{L}
+    &=
+    \mathbb{E}_{B}
+    [\mathbf{G}_{B}\mathbf{G}_{B}^{\mathsf{T}}],
+    \label{eq:opt-soap-L}\\
+    \mathbf{R}
+    &=
+    \mathbb{E}_{B}
+    [\mathbf{G}_{B}^{\mathsf{T}}\mathbf{G}_{B}],
+    \label{eq:opt-soap-R}
+\end{align}
+
+where the expectation is over batches. Let their eigendecompositions be
+
+\begin{align}
+    \mathbf{L}
+    &=
+    \mathbf{Q}_{L}\boldsymbol{\Lambda}_{L}
+    \mathbf{Q}_{L}^{\mathsf{T}},
+    \label{eq:opt-soap-left-eigen}\\
+    \mathbf{R}
+    &=
+    \mathbf{Q}_{R}\boldsymbol{\Lambda}_{R}
+    \mathbf{Q}_{R}^{\mathsf{T}}.
+    \label{eq:opt-soap-right-eigen}
+\end{align}
+
+The rotated gradient is
+
+\begin{equation}
+    \mathbf{G}'_t
+    =
+    \mathbf{Q}_{L}^{\mathsf{T}}
+    \mathbf{G}_t
+    \mathbf{Q}_{R}.
+    \label{eq:opt-soap-rotated-gradient}
+\end{equation}
+
+The SOAP paper first establishes a connection between a modified,
+idealized Shampoo algorithm using a power of $1/2$ and Adafactor
+operating in the eigenbasis supplied by Shampoo. The equivalence
+uses dataset-averaged covariance matrices and a scalar correction
+to the layer learning rate. This is distinct from the original
+Shampoo exponent of $1/4$. The connection motivates replacing
+Adafactor with Adam in the rotated coordinate system
+\parencite{Vyas2025SOAP}.
+
+In the practical SOAP algorithm, the first-moment state is maintained
+in the original parameter coordinates:
+
+\begin{equation}
+    \mathbf{M}_t
+    =
+    \beta_1\mathbf{M}_{t-1}
+    +(1-\beta_1)\mathbf{G}_t.
+    \label{eq:opt-soap-first-moment}
+\end{equation}
+
+It is then rotated into the current preconditioner basis:
+
+\begin{equation}
+    \mathbf{M}'_t
+    =
+    \mathbf{Q}_{L}^{\mathsf{T}}
+    \mathbf{M}_t
+    \mathbf{Q}_{R}.
+    \label{eq:opt-soap-rotated-momentum}
+\end{equation}
+
+The second-moment state is maintained in the rotated coordinates:
+
+\begin{equation}
+    \mathbf{V}'_t
+    =
+    \beta_2\mathbf{V}'_{t-1}
+    +(1-\beta_2)
+    (\mathbf{G}'_t\odot\mathbf{G}'_t).
+    \label{eq:opt-soap-second-moment}
+\end{equation}
+
+After the appropriate bias corrections, the Adam update in the rotated
+space is
+
+\begin{equation}
+    \mathbf{N}'_t
+    =
+    \frac{\widehat{\mathbf{M}}'_t}
+    {\sqrt{\widehat{\mathbf{V}}'_t}+\epsilon}.
+    \label{eq:opt-soap-adam-rotated}
+\end{equation}
+
+The update is transformed back to the original coordinates:
+
+\begin{equation}
+    \mathbf{N}_t
+    =
+    \mathbf{Q}_{L}
+    \mathbf{N}'_t
+    \mathbf{Q}_{R}^{\mathsf{T}},
+    \label{eq:opt-soap-inverse-rotation}
+\end{equation}
+
+and the parameters are updated using the AdamW-style decoupled
+weight-decay operation:
+
+\begin{equation}
+    \mathbf{W}_{t+1}
+    =
+    (1-\eta_t\lambda)\mathbf{W}_t
+    -
+    \eta_t\mathbf{N}_t.
+    \label{eq:opt-soap-update}
+\end{equation}
+
+The left and right covariance estimates are updated online:
+
+\begin{align}
+    \mathbf{L}_t
+    &=
+    \beta_2\mathbf{L}_{t-1}
+    +(1-\beta_2)\mathbf{G}_t\mathbf{G}_t^{\mathsf{T}},
+    \label{eq:opt-soap-running-L}\\
+    \mathbf{R}_t
+    &=
+    \beta_2\mathbf{R}_{t-1}
+    +(1-\beta_2)\mathbf{G}_t^{\mathsf{T}}\mathbf{G}_t.
+    \label{eq:opt-soap-running-R}
+\end{align}
+
+The eigenvector basis is refreshed every $f$ iterations, where $f$ is
+the preconditioning frequency. SOAP uses power iteration followed by
+QR decomposition to update eigenvector estimates. In a simplified
+power-iteration step, a positive-semidefinite preconditioner
+$\mathbf{P}$ and a current basis estimate $\mathbf{Q}$ produce
+
+\begin{equation}
+    \mathbf{S}=\mathbf{P}\mathbf{Q},
+    \qquad
+    \mathbf{Q}_{\mathrm{new}}
+    =
+    \operatorname{QR}(\mathbf{S}),
+    \label{eq:opt-soap-power-qr}
+\end{equation}
+
+where $\operatorname{QR}$ denotes the orthogonal factor from a QR
+decomposition. The first basis is initialized by an eigendecomposition.
+For one-dimensional parameters, SOAP uses ordinary AdamW. For very
+large dimensions, a rotation may be fixed to the identity to avoid
+prohibitive memory and computation; if both rotations of a matrix
+layer are identities, the update reduces to Adam-style optimization
+\parencite{Vyas2025SOAP}.
+
+Vyas and colleagues evaluate SOAP on language-model pretraining runs
+with approximately $360$-million- and $660$-million-parameter models.
+In their large-batch experiments, SOAP reduces the number of
+optimization iterations by more than $40\%$ and wall-clock time by
+more than $35\%$ relative to AdamW, and improves both measures by
+approximately $20\%$ relative to Shampoo. These are results for the
+experimental configurations in that paper; they do not establish
+that the same improvements hold at all model scales, hardware
+configurations, or data-to-model ratios
+\parencite{Vyas2025SOAP}.
+
+\subsection{Low-Rank and Matrix-Orthogonalized Optimizers}
+\label{subsec:optimization-low-rank-matrix}
+
+Shampoo and SOAP exploit matrix structure through covariance
+preconditioning. Other optimizers exploit different structural
+properties of neural-network gradients and parameter matrices.
+Low-rank methods reduce the dimension in which optimizer states are
+maintained, whereas matrix-orthogonalized methods transform a
+matrix-valued update according to its singular-value structure
+\parencite{Ranganath2026Navigating}.
+
+\paragraph{GaLore and low-rank projection.}
+For a gradient matrix
+$\mathbf{G}_t\in\mathbb{R}^{m\times n}$, a low-rank approximation
+takes the form
+
+\begin{equation}
+    \mathbf{G}_t
+    \approx
+    \mathbf{U}_t\mathbf{S}_t\mathbf{V}_t^{\mathsf{T}},
+    \qquad
+    r\ll\min(m,n),
+    \label{eq:opt-low-rank-svd}
+\end{equation}
+
+where $\mathbf{U}_t$ and $\mathbf{V}_t$ contain $r$ basis vectors
+and $\mathbf{S}_t$ contains the corresponding reduced-dimensional
+coefficients. Projection-based optimizers maintain adaptive states
+in a low-dimensional subspace rather than in the full matrix space.
+For a right projection matrix
+$\mathbf{P}_t\in\mathbb{R}^{n\times r}$, the projected gradient is
+
+\begin{equation}
+    \widetilde{\mathbf{G}}_t
+    =
+    \mathbf{G}_t\mathbf{P}_t.
+    \label{eq:opt-low-rank-projection}
+\end{equation}
+
+An update computed in the projected space can be mapped back by
+multiplication with $\mathbf{P}_t^{\mathsf{T}}$. GaLore uses
+gradient-derived low-rank subspaces to reduce the memory required
+for adaptive optimizer states. It is important to distinguish this
+from parameter-efficient fine-tuning: low-rank optimizer projection
+can reduce optimizer-state memory while still updating the original
+model parameters, whereas parameter-efficient fine-tuning restricts
+the trainable parameterization or subset of parameters
+\parencite{Ranganath2026Navigating,Vyas2025SOAP}.
+
+\paragraph{Muon and matrix orthogonalization.}
+Muon applies an approximate orthogonalization operation to a
+momentum-based matrix update. Let
+
+\begin{equation}
+    \mathbf{M}_t
+    =
+    \beta\mathbf{M}_{t-1}
+    +(1-\beta)\mathbf{G}_t
+    \label{eq:opt-muon-momentum}
+\end{equation}
+
+be a momentum matrix. The update is transformed by an approximate
+orthogonalization operator:
+
+\begin{equation}
+    \mathbf{U}_t
+    =
+    \operatorname{NS}(\mathbf{M}_t),
+    \qquad
+    \mathbf{W}_{t+1}
+    =
+    \mathbf{W}_t-\eta_t\mathbf{U}_t,
+    \label{eq:opt-muon-update}
+\end{equation}
+
+where $\operatorname{NS}$ denotes a Newton--Schulz-based
+approximation to matrix orthogonalization. To understand the
+operation, consider the singular value decomposition
+
+\begin{equation}
+    \mathbf{M}
+    =
+    \mathbf{U}\boldsymbol{\Sigma}\mathbf{V}^{\mathsf{T}}.
+    \label{eq:opt-muon-svd}
+\end{equation}
+
+The corresponding polar orthogonal factor is
+$\mathbf{U}\mathbf{V}^{\mathsf{T}}$. It retains the left and right
+singular directions while normalizing the singular values. Direct
+singular value decomposition at every update can be expensive;
+Newton--Schulz iterations approximate the transformation using
+matrix multiplications. Their coefficients and normalization are
+chosen so that the singular values move toward the desired range.
+Muon therefore differs from Shampoo: Shampoo accumulates covariance
+statistics and constructs matrix preconditioners, whereas Muon
+orthogonalizes a momentum-derived matrix update
+\parencite{Ranganath2026Navigating,Wen2026Fantastic}.
+
+In practical training, matrix-based updates are applied to suitable
+dense weight matrices, while embeddings, normalization parameters,
+and other parameter groups may use different update rules. This
+parameter-group-specific treatment reflects the fact that not every
+tensor has the same shape or benefits from the same matrix operation
+\parencite{Ranganath2026Navigating}.
+
+\subsection{Systems Constraints and Numerical Implementation}
+\label{subsec:optimization-systems-constraints}
+
+The mathematical update equation is only one component of an optimizer's
+practical cost. Large language models are commonly trained with mixed
+precision and distributed computation, and the optimizer must operate
+within the memory and communication limits of the complete training
+system.
+
+\paragraph{Optimizer-state memory.}
+For an AdamW-style mixed-precision configuration, a simplified
+accounting may include low-precision model parameters and gradients,
+32-bit master parameters, and two 32-bit moment vectors. This gives
+an approximate upper accounting of
+
+\begin{equation}
+    M_{\mathrm{training}}
+    \approx
+    2d+2d+4d+4d+4d
+    =
+    16d\ \text{bytes}.
+    \label{eq:opt-mixed-precision-memory}
+\end{equation}
+
+The exact total depends on precision, framework implementation,
+parameter sharding, and whether master parameters are stored
+separately. The equation excludes activation memory and temporary
+buffers. Its purpose is to show why optimizer states become a major
+memory component as $d$ grows
+\parencite{Ranganath2026Navigating}.
+
+\paragraph{Mixed precision and numerical stability.}
+LLM training uses numerical formats such as fp16 and bf16 to reduce
+memory and increase throughput. Reduced precision changes the
+numerical behavior of optimization. Small gradients may underflow,
+large values may overflow, and moment estimates may lose precision.
+Loss scaling can mitigate underflow in fp16 training, while bf16's
+larger exponent range can reduce the need for explicit scaling.
+Optimizer states are often retained in fp32 even when model weights
+and activations use lower precision.
+
+The stabilizer $\epsilon$ in Adam-like updates can materially affect
+the update when second-moment estimates are small. Gradient clipping
+limits rare large gradients, and the precision used for moment
+accumulation affects the accuracy of adaptive scaling. Matrix
+preconditioners introduce further numerical considerations because
+eigenvectors, matrix powers, and covariance estimates are sensitive
+to finite-precision arithmetic. Comparisons must therefore specify
+precision, clipping, loss scaling, and optimizer-state representation
+\parencite{Ranganath2026Navigating}.
+
+\paragraph{Distributed optimization and communication.}
+In data-parallel training, each worker computes gradients on a local
+microbatch. The gradients must be synchronized, commonly through
+all-reduce, before replicas apply the same update. Gradient
+synchronization can become a communication bottleneck as model size
+and worker count increase. Gradient accumulation, overlapping
+communication with backpropagation, bucketed communication,
+mixed-precision communication, and optimizer-state sharding are
+system-level techniques used to manage this cost.
+
+Optimizer-state sharding distributes auxiliary states such as Adam's
+first and second moments across workers. This differs from model
+sharding, which partitions parameters and may also partition
+gradients. Structured preconditioners and matrix-level optimizers
+can introduce additional statistics and synchronization requirements.
+Consequently, the cost of an optimizer cannot be inferred solely
+from the arithmetic in its update equation. It must be measured
+within the distributed layout and hardware configuration in which
+the model is trained \parencite{Ranganath2026Navigating}.
+
+\subsection{Empirical Evaluation and Optimizer Selection}
+\label{subsec:optimization-evaluation}
+
+An optimizer should not be judged only by the rate at which its
+training loss decreases during the early part of a run. Two distinct
+efficiency measures are important. Token efficiency describes
+validation loss as a function of the number of training tokens:
+
+\begin{equation}
+    \mathcal{L}_{\mathrm{val}}
+    =
+    \mathcal{L}_{\mathrm{val}}(N_{\mathrm{tokens}}),
+    \label{eq:opt-token-efficiency}
+\end{equation}
+
+whereas wall-clock efficiency describes validation loss as a
+function of elapsed training time:
+
+\begin{equation}
+    \mathcal{L}_{\mathrm{val}}
+    =
+    \mathcal{L}_{\mathrm{val}}(T_{\mathrm{wall}}).
+    \label{eq:opt-wallclock-efficiency}
+\end{equation}
+
+An optimizer can require fewer tokens to reach a target loss while
+incurring greater computation per update. Conversely, an optimizer
+with lower per-step overhead may need more tokens to reach the same
+loss. Memory usage, throughput, and downstream performance are
+also relevant. A meaningful comparison therefore considers the
+complete training budget rather than one isolated metric
+\parencite{Ranganath2026Navigating,Wen2026Fantastic}.
+
+Hyperparameter fairness is equally important. Learning rate,
+weight decay, warmup duration, momentum coefficients, clipping
+thresholds, and optimizer-specific parameters interact with the
+update rule. Applying identical hyperparameters to different
+optimizers does not ensure a fair comparison. Wen and colleagues
+show that Lion and AdamW, for example, can require substantially
+different optimal weight-decay coefficients; their reported
+comparison includes an optimum near $0.6$ for Lion and near $0.1$
+for AdamW in the studied setting. A poorly tuned AdamW baseline
+can therefore exaggerate the apparent speedup of an alternative
+optimizer \parencite{Wen2026Fantastic}.
+
+Model scale and data-to-model ratio also affect optimizer rankings.
+Wen and colleagues evaluate models from approximately $0.1$ billion
+to $1.2$ billion parameters and training regimes corresponding to
+$1\times$, $2\times$, $4\times$, and $8\times$ the Chinchilla
+data-to-model ratio. Their results show that the speedup of
+matrix-based optimizers over a well-tuned AdamW baseline decreases
+with model size: the reported advantage falls from approximately
+$1.4\times$ for $0.1$-billion-parameter models to approximately
+$1.1\times$ for $1.2$-billion-parameter models in the reported
+$8\times$ regime. They also find that matrix-based optimizers
+consistently outperform scalar-based optimizers in their smaller
+model experiments, while the preferred optimizer can change as
+the data-to-model ratio increases. Muon performs strongly in
+smaller-ratio regimes, whereas SOAP and Kron become more
+competitive at larger ratios \parencite{Wen2026Fantastic}.
+
+Intermediate checkpoints can also produce misleading rankings.
+As learning rates decay, loss curves for different optimizers can
+cross, so an optimizer that appears better early in training may
+not be better at the target training budget. The comparison should
+therefore be made at the intended end-of-training budget, with
+hyperparameters tuned separately for each optimizer and model
+setting. These results do not invalidate the improvements reported
+in the SOAP experiments; they establish that such improvements
+must be interpreted in relation to scale, batch size, training
+horizon, data-to-model ratio, hardware, and tuning methodology
+\parencite{Vyas2025SOAP,Wen2026Fantastic}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/optimizer_taxonomy}
+    \caption{A conceptual taxonomy of optimizer families discussed in
+    this section. The categories distinguish coordinate-wise adaptive
+    updates, structured matrix preconditioning, memory-oriented
+    methods, and curvature or projection methods. They are not
+    mutually exclusive: an optimizer can combine more than one
+    design principle.}
+    \label{fig:optimizer-taxonomy}
+\end{figure}
+% Alt text for accessibility register: A gradient input branches into
+% four groups of optimizer methods: scalar or diagonal methods, matrix
+% and tensor preconditioners, memory-efficient methods, and curvature
+% or projection-based methods.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/shampoo_soap_geometry}
+    \caption{Conceptual comparison of Shampoo and SOAP for a matrix-valued
+    parameter. Shampoo applies left and right covariance-derived matrix
+    preconditioners. SOAP rotates the gradient into their eigenbasis,
+    applies Adam-style adaptive updates in that basis, and rotates the
+    update back to the original coordinates.}
+    \label{fig:shampoo-soap-geometry}
+\end{figure}
+% Alt text for accessibility register: The matrix gradient is used to
+% construct left and right covariance matrices. Shampoo applies inverse
+% fractional powers of those matrices to the gradient. SOAP instead
+% rotates the gradient into the covariance eigenbasis, applies Adam
+% there, and rotates the update back.
+
+The relationships summarized in \cref{fig:optimizer-taxonomy} and
+\cref{fig:shampoo-soap-geometry} show that optimizer design is a
+choice about which information from the gradient history and
+parameter geometry is retained, and how that information is used
+to construct an update. The empirical results show why no single
+optimizer can be declared universally superior from one experiment.
+The appropriate choice depends on the model scale, the data budget,
+the hardware and distributed-training layout, the memory budget,
+and the quality of hyperparameter tuning
+\parencite{Ranganath2026Navigating,Wen2026Fantastic}.
+
+\subsection{Limitations and Connection to the Next Topic}
+\label{subsec:optimization-limitations-transition}
+
+The progression from stochastic gradient descent to adaptive,
+memory-efficient, curvature-aware, and matrix-based optimizers
+reflects a progression in the information used to construct
+parameter updates. SGD uses the current stochastic gradient.
+Momentum retains a smoothed history of gradients. AdamW combines
+first- and second-moment estimates with decoupled weight decay.
+Memory-efficient methods reduce the cost of storing optimizer
+statistics, while curvature-aware and structured methods attempt
+to represent additional information about the optimization
+landscape.
+
+Shampoo demonstrates how matrix and tensor structure can be
+retained without explicitly constructing a full-dimensional
+preconditioner. SOAP combines this structured coordinate system
+with Adam-style adaptive statistics. GaLore uses low-rank
+subspaces to reduce optimizer-state memory, and Muon applies
+matrix orthogonalization to momentum-derived updates. These
+methods address different limitations and should be compared
+using both mathematical and system-level criteria
+\parencite{Gupta2018Shampoo,Vyas2025SOAP,Ranganath2026Navigating}.
+
+The theoretical guarantees available for these algorithms also
+have different scopes. Stochastic-gradient convergence results
+depend on assumptions such as smoothness, convexity or
+nonconvex stationarity conditions, and bounded stochastic
+variance. Shampoo's regret guarantee is established in a
+stochastic convex online setting. Empirical improvements on
+nonconvex language-model pretraining tasks are important, but
+they do not replace these assumptions with a general proof of
+global optimality. Similarly, empirical speedups measured at
+one scale or data budget do not establish the same speedup at
+another scale \parencite{Bottou2018Optimization,Gupta2018Shampoo,
+Vyas2025SOAP,Wen2026Fantastic}.
+
+The central conclusion is that an optimizer is not simply a
+rule for subtracting a scaled gradient. It is a numerical
+procedure for deciding which statistical and geometric
+properties of the gradient should influence the next parameter
+update, subject to the memory, precision, computation, and
+communication constraints of the training system. Having
+established how the parameters are updated, the next discussion
+can turn to the objective functions that define what the
+optimization process is attempting to achieve. The distinction
+between the objective and the algorithm that minimizes it is
+necessary for understanding the complete training process of
+language models.

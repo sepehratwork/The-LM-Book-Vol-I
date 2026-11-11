@@ -1,0 +1,48 @@
+% ============================================================================
+% RLVR pipeline schematic.
+% This file contains only the drawing code. The figure environment and its
+% caption are defined in chapters/05_reinforcement_learning/03_rlvr.tex.
+% Uses the standard LaTeX picture environment and requires no graphics package.
+% ============================================================================
+
+\begingroup
+\setlength{\unitlength}{1mm}
+\begin{picture}(145,62)
+    % Main generation and verification path.
+    \put(0,44){\framebox(23,12){\shortstack[c]{Prompt\\\(x\)}}}
+    \put(23,50){\vector(1,0){8}}
+
+    \put(31,44){\framebox(25,12){\shortstack[c]{Policy\\\(\pi_\theta\)}}}
+    \put(56,50){\vector(1,0){8}}
+
+    \put(64,44){\framebox(27,12){\shortstack[c]{Generated response\\\(y\sim\pi_\theta\)}}}
+    \put(91,50){\vector(1,0){8}}
+
+    \put(99,44){\framebox(22,12){\shortstack[c]{Verifier\\\(C(x,y)\)}}}
+    \put(121,50){\vector(1,0){8}}
+
+    \put(129,44){\framebox(16,12){\shortstack[c]{Reward\\\(v(x,y)\)}}}
+
+    % Reference-policy and value-function paths.
+    \put(5,18){\framebox(30,12){\shortstack[c]{Reference policy\\\(\pi_{\mathrm{ref}}\)}}}
+    \put(35,24){\vector(1,0){7}}
+    \put(42,18){\framebox(28,12){\shortstack[c]{KL penalty\\\(D_{\mathrm{KL}}\)}}}
+
+    \put(82,18){\framebox(28,12){\shortstack[c]{Value model\\\(V_\psi(s_t)\)}}}
+    \put(110,24){\vector(1,0){6}}
+    \put(116,18){\framebox(29,12){\shortstack[c]{Advantage\\\(\widehat A_t\)}}}
+
+    % Inputs to the PPO update.
+    \put(56,18){\line(1,-1){6}}
+    \put(62,12){\vector(1,0){18}}
+
+    \put(130,18){\line(-1,-1){6}}
+    \put(124,12){\vector(-1,0){4}}
+
+    \put(137,44){\line(0,-1){16}}
+    \put(137,28){\line(-1,0){37}}
+    \put(100,28){\vector(0,-1){16}}
+
+    \put(80,0){\framebox(40,12){\shortstack[c]{PPO update\\policy and value}}}
+\end{picture}
+\endgroup

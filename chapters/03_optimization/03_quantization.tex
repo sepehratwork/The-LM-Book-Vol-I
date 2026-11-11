@@ -1,0 +1,1065 @@
+% ============================================================================
+% 03_optimization | 03_quantization
+% Section-body file: include immediately after the relevant \section command
+% in the master tstextbook.tex file.
+%
+% This file intentionally contains no document class, package imports,
+% \chapter, \section, or bibliography command. Figure source fragments are
+% stored in the root-level figures directory and inserted with \input.
+% References are maintained in the root-level bibliography.bib file.
+% ============================================================================
+
+The preceding sections established how an objective function defines the
+learning problem and how an optimization algorithm uses gradients to update
+the parameters of a neural network. These operations explain how a language
+model learns its parameters, but they do not by themselves explain whether
+the resulting model can be stored and executed within a practical
+computational budget. As the number of parameters and the length of
+processed sequences increase, the numerical precision used to represent
+weights and intermediate tensors becomes an important part of the model's
+computational design.
+
+Quantization addresses this problem by representing numerical quantities
+with fewer bits. It can reduce parameter storage, the memory required for
+intermediate representations, and, when supported by the hardware and
+kernels, the cost of arithmetic operations. The reduction in precision,
+however, also reduces the number of representable values and therefore
+introduces approximation error. The central problem is consequently not
+merely to compress a model, but to choose numerical representations that
+reduce computational requirements while preserving the information needed
+for accurate prediction and stable optimization.
+
+This distinction connects quantization directly to the optimization
+process. A pretrained model can be quantized after its training has
+finished, or quantization can be simulated during training so that the
+model parameters adapt to the numerical constraints that will be present
+at inference time. The first strategy is generally described as
+post-training quantization (PTQ), whereas the second is quantization-aware
+training (QAT). The surveys by \textcite{chen2026llmquantization} and
+\textcite{song2026targetcentricqat} provide complementary foundations for
+this discussion: the former organizes large language model quantization
+across pretraining, fine-tuning, and inference, while the latter analyzes
+QAT according to the particular tensors being quantized.
+
+\subsection{Numerical representation and the need for quantization}
+\label{subsec:quant-numerical-representation}
+
+A neural network performs its computations using numerical representations
+of model parameters and intermediate quantities. Consider a linear
+transformation
+\begin{equation}
+    \mathbf{y}=\mathbf{W}\mathbf{x}+\mathbf{b},
+    \label{eq:quant-linear-layer}
+\end{equation}
+where
+\(\mathbf{W}\in\mathbb{R}^{m\times n}\) is a weight matrix,
+\(\mathbf{x}\in\mathbb{R}^{n}\) is an input vector, and
+\(\mathbf{b}\in\mathbb{R}^{m}\) is a bias vector. The output belongs to
+\(\mathbb{R}^{m}\). In a Transformer, the same principle appears in the
+linear projections used by attention and feed-forward sublayers, as well
+as in the transformations applied to intermediate representations.
+
+In conventional high-precision computation, tensor elements may be
+represented using formats such as FP32 or FP16. Lower-precision formats
+include FP8 and FP4, while integer representations include INT8 and INT4.
+The bit-width \(b\) determines the maximum number of distinct binary
+codewords that can represent a scalar:
+\begin{equation}
+    N_{\mathrm{levels}}=2^b.
+    \label{eq:quant-number-levels}
+\end{equation}
+For an unsigned integer representation, the range is
+\(0,\ldots,2^b-1\). A common signed two's-complement range is
+\begin{equation}
+    q_{\min}=-2^{b-1},
+    \qquad
+    q_{\max}=2^{b-1}-1.
+    \label{eq:quant-signed-range}
+\end{equation}
+A smaller bit-width therefore provides fewer representable values. The
+result is a more compact numerical representation, but also a greater
+risk that distinct real values will be mapped to the same discrete level.
+
+The storage implications can be derived directly. Let a model contain
+\(N\) parameters, each represented using \(b\) bits. Ignoring scale
+factors, zero-points, alignment, and other metadata, the parameter
+storage is
+\begin{equation}
+    M_b=\frac{Nb}{8}\ \text{bytes}.
+    \label{eq:quant-model-memory}
+\end{equation}
+FP16 storage requires \(2N\) bytes, whereas INT4 storage requires
+\(N/2\) bytes. The idealized compression ratio relative to FP16 is
+therefore
+\begin{equation}
+    C_{\mathrm{FP16}\rightarrow b}
+    =
+    \frac{16}{b}.
+    \label{eq:quant-compression-ratio}
+\end{equation}
+For a model with \(10^9\) parameters, FP16 weights require approximately
+\(2\) GB when decimal gigabytes are used, while INT4 weights require
+approximately \(0.5\) GB before quantization metadata and implementation
+overheads are included. This is an idealized weight-storage calculation,
+not a prediction of the total memory required by a training or inference
+system. The actual memory footprint also depends on activations,
+gradients, optimizer states, cached representations, and the storage of
+quantization parameters \parencite{chen2026llmquantization}.
+
+The distinction between parameter storage and total execution memory is
+important for large language models. During training, weights are only
+one part of the memory requirement: activations must be retained or
+recomputed for backpropagation, gradients must be represented, and
+optimizers may maintain additional state variables. During autoregressive
+inference, the key-value (KV) cache grows with the number of retained
+tokens. Quantizing only the weights therefore does not necessarily
+resolve every memory bottleneck. This motivates treating quantization
+according to both the numerical representation and the computational
+role of the quantity being represented.
+
+\subsection{Uniform affine quantization}
+\label{subsec:quant-uniform-affine}
+
+A fundamental formulation used in neural-network quantization is uniform
+affine quantization. It maps a real-valued tensor to a discrete integer
+tensor using equally spaced quantization levels. Let
+\begin{equation}
+    \mathbf{x}\in
+    \mathbb{R}^{d_1\times d_2\times\cdots\times d_k}
+    \label{eq:quant-real-tensor}
+\end{equation}
+be a real-valued tensor. Its integer representation is denoted by
+\(\mathbf{x}_{\mathrm{int}}\). Uniform affine quantization is determined
+by a positive step size \(s\), an integer zero-point \(z\), and the
+representable integer interval \([q_{\min},q_{\max}]\). The step size
+sets the distance between adjacent reconstruction levels. The
+zero-point determines which integer code represents the real value zero.
+
+For a scalar \(x\), the quantization operation is
+\begin{equation}
+    x_{\mathrm{int}}
+    =
+    \operatorname{clamp}
+    \left(
+        \operatorname{round}\left(\frac{x}{s}\right)+z,
+        q_{\min},q_{\max}
+    \right),
+    \label{eq:quant-affine-quantize}
+\end{equation}
+where \(\operatorname{round}(\cdot)\) denotes rounding to the nearest
+integer and \(\operatorname{clamp}(\cdot)\) restricts its argument to the
+valid integer interval. In explicit piecewise form,
+\begin{equation}
+    \operatorname{clamp}(u,q_{\min},q_{\max})
+    =
+    \begin{cases}
+        q_{\min}, & u<q_{\min},\\
+        u, & q_{\min}\leq u\leq q_{\max},\\
+        q_{\max}, & u>q_{\max}.
+    \end{cases}
+    \label{eq:quant-clamp}
+\end{equation}
+The integer code is converted back to an approximation in the real
+domain through dequantization:
+\begin{equation}
+    \widehat{x}=s(x_{\mathrm{int}}-z).
+    \label{eq:quant-affine-dequantize}
+\end{equation}
+Combining the two operations gives the quantize--dequantize mapping
+\begin{equation}
+    \boxed{
+    Q_{s,z}(x)
+    =
+    s\left[
+        \operatorname{clamp}
+        \left(
+            \operatorname{round}\left(\frac{x}{s}\right)+z,
+            q_{\min},q_{\max}
+        \right)-z
+    \right].
+    }
+    \label{eq:quant-affine-q}
+\end{equation}
+The output \(\widehat{x}=Q_{s,z}(x)\) is the reconstructed value used
+to approximate the original real-valued quantity. The corresponding
+quantization error is
+\begin{equation}
+    \epsilon=x-\widehat{x}.
+    \label{eq:quant-error-definition}
+\end{equation}
+The mapping and its constituent operations are summarized in
+\cref{fig:quant-affine-map}. This quantize--dequantize form is especially
+important in QAT, where the forward computation simulates the effect of
+low-precision representation while the training implementation may
+continue to use floating-point arithmetic
+\parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/quantization_affine_map}
+    \caption{Uniform affine quantization and dequantization. A real-valued
+    input is scaled, rounded, shifted by the zero-point, and clipped to
+    the integer range. Dequantization maps the integer code back to an
+    approximation in the real domain.}
+    \label{fig:quant-affine-map}
+\end{figure}
+% Alt text for accessibility register: A vertical flow diagram showing a
+% real-valued input x, division by the step size, rounding, addition of the
+% zero-point and clipping to the integer range, followed by dequantization
+% using the step size and zero-point to obtain the reconstructed value.
+
+\paragraph{Symmetric quantization.}
+In symmetric quantization, the zero-point is fixed to zero:
+\begin{equation}
+    z=0.
+    \label{eq:quant-symmetric-zero-point}
+\end{equation}
+The quantization and dequantization operations consequently simplify to
+\begin{align}
+    x_{\mathrm{int}}
+    &=
+    \operatorname{clamp}
+    \left(
+        \operatorname{round}\left(\frac{x}{s}\right),
+        q_{\min},q_{\max}
+    \right),
+    \label{eq:quant-symmetric-integer}
+    \\
+    \widehat{x}
+    &=
+    s x_{\mathrm{int}}.
+    \label{eq:quant-symmetric-reconstruction}
+\end{align}
+For a symmetric real-valued clipping interval, define
+\begin{equation}
+    \alpha=\max\{|x_{\min}|,|x_{\max}|\}.
+    \label{eq:quant-symmetric-alpha}
+\end{equation}
+A common symmetric step size is
+\begin{equation}
+    s=\frac{\alpha}{q_{\max}},
+    \label{eq:quant-symmetric-scale}
+\end{equation}
+where \(q_{\max}>0\). In a symmetric signed quantizer, the negative
+integer endpoint may be restricted to \(-q_{\max}\), even when the
+underlying signed integer data type has one additional negative code.
+This convention keeps the quantization interval symmetric around zero.
+Symmetric quantization is commonly used for weight tensors because the
+zero-point-free formulation simplifies integer arithmetic
+\parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+\paragraph{Asymmetric quantization.}
+Asymmetric quantization permits a nonzero zero-point and can therefore
+represent a real-valued interval that is not centered around zero. Given
+a selected clipping interval \([x_{\min},x_{\max}]\) and integer interval
+\([q_{\min},q_{\max}]\), the step size is
+\begin{equation}
+    s=
+    \frac{x_{\max}-x_{\min}}
+         {q_{\max}-q_{\min}}.
+    \label{eq:quant-asymmetric-scale}
+\end{equation}
+The zero-point is chosen so that real zero is represented as accurately
+as possible:
+\begin{equation}
+    z=
+    \operatorname{round}
+    \left(q_{\min}-\frac{x_{\min}}{s}\right),
+    \label{eq:quant-asymmetric-zero-point}
+\end{equation}
+and is clipped to the valid integer range when necessary. Asymmetric
+quantization can be useful for activation distributions that are shifted
+or predominantly nonnegative. The choice between symmetric and
+asymmetric quantization is therefore related to the statistical
+distribution of the tensor and to the arithmetic supported by the target
+implementation \parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+\paragraph{Quantization granularity.}
+The number of tensor elements that share the same quantization
+parameters determines the quantization granularity. Per-tensor
+quantization uses one scale and zero-point for an entire tensor.
+Per-channel quantization assigns separate parameters to channels, which
+allows different channel distributions to be represented using different
+ranges. Per-group quantization partitions a tensor into smaller groups
+and assigns quantization parameters to each group. Per-token
+quantization applies parameters separately to token representations and
+is relevant when activation or KV-cache distributions vary across token
+positions. Per-layer terminology is also used when quantization
+parameters are shared at the layer level; the exact distinction between
+per-layer and per-tensor terminology depends on which tensors are
+included in the implementation.
+
+Finer granularity can reduce distortion because the scale and zero-point
+adapt to more local distributions. It also requires additional metadata
+and can increase indexing, memory, and computational overhead. Coarser
+granularity reduces this overhead but may force numerically heterogeneous
+values to share a quantization range. Group size, tensor layout, and the
+availability of efficient kernels must therefore be considered together
+\parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+\subsection{Quantization error and its propagation through neural networks}
+\label{subsec:quant-error-propagation}
+
+Quantization error has two principal sources. Rounding error occurs
+because a real-valued quantity within the representable interval must
+be mapped to one of the discrete quantization levels. Clipping error
+occurs when the quantity lies outside the representable interval and
+must be saturated at a boundary. With a consistent sign convention,
+the total error can be decomposed into rounding and clipping
+contributions:
+\begin{equation}
+    \epsilon=\epsilon_{\mathrm{round}}
+              +\epsilon_{\mathrm{clip}}.
+    \label{eq:quant-error-decomposition}
+\end{equation}
+For a value that is not clipped, nearest-level rounding gives the
+absolute-error bound
+\begin{equation}
+    |\epsilon_{\mathrm{round}}|
+    \leq \frac{s}{2}.
+    \label{eq:quant-rounding-bound}
+\end{equation}
+This bound does not apply to clipped values, whose error can be much
+larger than half a quantization step.
+
+A numerical example makes the distinction explicit. Consider a
+symmetric INT4 quantizer with the symmetric integer interval
+\([-7,7]\) and real clipping interval \([-1,1]\). The step size is
+\begin{equation}
+    s=\frac{1}{7}\approx 0.142857.
+    \label{eq:quant-example-step}
+\end{equation}
+For \(x=0.42\), the integer code is
+\begin{equation}
+    x_{\mathrm{int}}
+    =
+    \operatorname{round}(0.42/0.142857)
+    =
+    \operatorname{round}(2.94)=3.
+    \label{eq:quant-example-round}
+\end{equation}
+The reconstructed value is approximately
+\begin{equation}
+    \widehat{x}=3(0.142857)=0.428571,
+    \label{eq:quant-example-reconstruction}
+\end{equation}
+so the signed error is
+\begin{equation}
+    \epsilon=0.42-0.428571\approx -0.008571.
+    \label{eq:quant-example-round-error}
+\end{equation}
+This is a rounding error. For \(x=1.2\), the unbounded rounded code
+would be \(8\), but the largest permitted code is \(7\). The value is
+therefore clipped, giving
+\begin{equation}
+    x_{\mathrm{int}}=7,\qquad
+    \widehat{x}=1,\qquad
+    \epsilon=1.2-1=0.2.
+    \label{eq:quant-example-clipping-error}
+\end{equation}
+The example illustrates the trade-off in selecting a clipping range:
+expanding the range reduces clipping but increases the spacing between
+quantization levels, whereas narrowing the range improves resolution
+for values near zero but can clip more extreme values
+\parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+Quantization errors also propagate through the network. Consider the
+linear transformation in \cref{eq:quant-linear-layer}. Let the
+quantized weight matrix and input vector be
+\begin{align}
+    \widehat{\mathbf{W}}
+    &=\mathbf{W}+\Delta\mathbf{W},
+    \label{eq:quant-weight-perturbation}
+    \\
+    \widehat{\mathbf{x}}
+    &=\mathbf{x}+\Delta\mathbf{x},
+    \label{eq:quant-activation-perturbation}
+\end{align}
+where \(\Delta\mathbf{W}\) and \(\Delta\mathbf{x}\) are their
+quantization perturbations. The quantized output is
+\begin{equation}
+    \widehat{\mathbf{y}}
+    =
+    (\mathbf{W}+\Delta\mathbf{W})
+    (\mathbf{x}+\Delta\mathbf{x})+\mathbf{b}.
+    \label{eq:quant-perturbed-output}
+\end{equation}
+Expanding the product and subtracting the original output gives
+\begin{equation}
+    \boxed{
+    \Delta\mathbf{y}
+    =
+    \Delta\mathbf{W}\mathbf{x}
+    +\mathbf{W}\Delta\mathbf{x}
+    +\Delta\mathbf{W}\Delta\mathbf{x}.
+    }
+    \label{eq:quant-output-error}
+\end{equation}
+If only weights are quantized, then
+\(\Delta\mathbf{x}=\mathbf{0}\), and
+\begin{equation}
+    \Delta\mathbf{y}
+    =
+    \Delta\mathbf{W}\mathbf{x}.
+    \label{eq:quant-weight-only-error}
+\end{equation}
+If only activations are quantized, then
+\(\Delta\mathbf{W}=\mathbf{0}\), and
+\begin{equation}
+    \Delta\mathbf{y}
+    =
+    \mathbf{W}\Delta\mathbf{x}.
+    \label{eq:quant-activation-only-error}
+\end{equation}
+When both are quantized, the interaction term
+\(\Delta\mathbf{W}\Delta\mathbf{x}\) also contributes. This is one
+reason joint weight--activation quantization is more complicated than
+weight-only quantization.
+
+In a deep network, perturbations can pass through successive linear
+transformations, nonlinear activation functions, attention operations,
+normalization, and residual connections. The error at a later layer
+therefore depends on both the local approximation and the transformations
+applied to the perturbed representation. Weight errors are relatively
+static after offline quantization, whereas activation errors depend on
+the input and runtime tensor distributions. The LLM quantization survey
+describes this distinction as static weight error and dynamic activation
+error, with activation errors potentially accumulating across layers
+\parencite{chen2026llmquantization}. The QAT survey further emphasizes
+that error characteristics depend on the quantization target and its
+lifetime, reuse frequency, and deployment constraints
+\parencite{song2026targetcentricqat}.
+
+\subsection{Quantization as part of the optimization process}
+\label{subsec:quantization-optimization}
+
+\paragraph{Post-training quantization.}
+Post-training quantization applies low-precision representations to a
+model after high-precision training has been completed. The pretrained
+parameters are analyzed, quantization parameters are selected, and the
+model tensors are mapped to their lower-precision representations.
+Calibration data can be used to estimate activation ranges, while
+reconstruction objectives or sensitivity information can be used to
+choose quantization parameters. PTQ avoids repeating the original
+pretraining process and is therefore attractive when training the model
+again would be prohibitively expensive.
+
+Its principal limitation is that the original model was optimized
+without explicitly accounting for the approximation errors introduced
+by quantization. A low-bit representation can consequently alter
+sensitive weights or activations and degrade the model's performance.
+This issue is especially important when activation distributions contain
+outliers: a small number of large values can expand the quantization
+range and leave fewer effective levels for the majority of values.
+PTQ methods therefore differ in how they estimate ranges, reconstruct
+weights, use calibration data, and account for sensitivity
+\parencite{chen2026llmquantization}.
+
+\paragraph{Quantization-aware training.}
+Quantization-aware training incorporates quantization effects into the
+training or fine-tuning computation. Instead of optimizing a model only
+under high-precision forward computation, QAT inserts fake-quantization
+operations so that the forward pass reflects the approximation that
+will be present in the deployed model. If a layer is
+\begin{equation}
+    \mathbf{y}=f(\mathbf{W}\mathbf{x}+\mathbf{b}),
+    \label{eq:quant-full-precision-layer}
+\end{equation}
+a QAT forward pass can use
+\begin{equation}
+    \widehat{\mathbf{y}}
+    =
+    f\left(
+        Q(\mathbf{W})Q(\mathbf{x})+\mathbf{b}
+    \right),
+    \label{eq:quant-qat-forward}
+\end{equation}
+where \(Q(\cdot)\) denotes the quantize--dequantize operator and only
+the selected tensors are quantized. The forward computation is commonly
+performed in floating-point arithmetic while the low-precision effects
+are emulated by the fake quantizer.
+
+The underlying trainable parameters can remain in full precision as
+master weights. Their fake-quantized versions are used in the forward
+pass, while the optimizer updates the master parameters. A basic
+gradient-descent update is
+\begin{equation}
+    \mathbf{W}_{t+1}
+    =
+    \mathbf{W}_t
+    -
+    \eta
+    \nabla_{\mathbf{W}}\mathcal{L},
+    \label{eq:quant-master-weight-update}
+\end{equation}
+where \(\eta\) is the learning rate and \(\mathcal{L}\) is the training
+loss. The updated master weights are quantized again during the next
+forward pass. Maintaining continuous master weights preserves small
+parameter updates that could be lost if optimization were performed
+directly on a coarse discrete grid. The distinction between the
+full-precision parameter state and its fake-quantized forward proxy is
+central to common QAT formulations
+\parencite{song2026targetcentricqat}.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/quantization_qat_flow}
+    \caption{Simplified quantization-aware training loop. Master weights
+    are fake-quantized for the forward computation; the loss is
+    differentiated using a surrogate gradient, and the optimizer updates
+    the underlying master weights.}
+    \label{fig:quant-qat-flow}
+\end{figure}
+% Alt text for accessibility register: A loop showing full-precision
+% master weights passing through fake quantization into a quantized
+% forward computation, followed by loss evaluation, surrogate-gradient
+% backpropagation, and an optimizer update to the master weights.
+
+\paragraph{The straight-through estimator.}
+The central mathematical difficulty in QAT is that rounding is
+non-differentiable. The function
+\begin{equation}
+    q(x)=\operatorname{round}(x)
+    \label{eq:quant-round-function}
+\end{equation}
+is piecewise constant. Its derivative is zero almost everywhere and
+undefined at rounding thresholds. Direct differentiation through the
+rounding operation would therefore fail to provide useful gradients
+for updating the underlying continuous parameters.
+
+The straight-through estimator (STE) replaces the true derivative
+with a surrogate derivative. For a quantized scalar with clipping
+interval \([x_{\min},x_{\max}]\), a common clipped STE approximation is
+\begin{equation}
+    \frac{\partial\widehat{x}}{\partial x}
+    \approx
+    \begin{cases}
+        1, & x_{\min}\leq x\leq x_{\max},\\
+        0, & \text{otherwise}.
+    \end{cases}
+    \label{eq:quant-clipped-ste}
+\end{equation}
+Using the chain rule with this approximation gives
+\begin{equation}
+    \frac{\partial\mathcal{L}}{\partial x}
+    \approx
+    \frac{\partial\mathcal{L}}{\partial\widehat{x}}
+    \mathbb{I}(x_{\min}\leq x\leq x_{\max}),
+    \label{eq:quant-ste-gradient}
+\end{equation}
+where \(\mathbb{I}(\cdot)\) is the indicator function. Inside the
+clipping interval, the quantizer is treated as if it had the derivative
+of the identity function. Outside the interval, the gradient is masked.
+This is a surrogate-gradient rule, not the true derivative of the
+discrete quantization operator. It makes gradient-based optimization
+practical but introduces a mismatch between the forward quantizer and
+the backward approximation \parencite{song2026targetcentricqat}.
+
+The clipped STE also has a limitation: saturated values receive zero
+gradient through the quantizer and may consequently have difficulty
+returning to the valid range. This motivates methods that learn or
+adapt clipping thresholds, scales, and offsets. PACT learns activation
+clipping thresholds, LSQ treats the step size as a learnable parameter,
+and LSQ+ introduces learnable offsets for asymmetric activation
+distributions. Gradient scaling and magnitude-aware differentiation
+address the scale of updates to quantization parameters, while
+oscillation-aware methods attempt to reduce repeated threshold
+crossings. Differentiable soft quantization replaces hard rounding
+during some or all of training with a smooth relaxation, but a
+relaxation can introduce a discrepancy between the training operator
+and the final hard quantizer. These alternatives are reviewed in
+\textcite{song2026targetcentricqat}.
+
+\paragraph{Learning the quantization step size.}
+A fixed quantization grid may not remain suitable as the weight and
+activation distributions change during training. Learnable step-size
+quantization treats the scale \(s\) as an optimization variable. For
+symmetric quantization, the fake-quantized scalar is
+\begin{equation}
+    \widehat{x}
+    =
+    s\,
+    \operatorname{clamp}
+    \left(
+        \operatorname{round}\left(\frac{x}{s}\right),
+        q_{\min},q_{\max}
+    \right).
+    \label{eq:quant-learnable-step-output}
+\end{equation}
+Let \(v=x/s\). Under the STE approximation, the derivative with respect
+to \(s\) is represented piecewise as
+\begin{equation}
+    \frac{\partial\widehat{x}}{\partial s}
+    \approx
+    \begin{cases}
+        q_{\min}, & v\leq q_{\min},\\
+        \operatorname{round}(v)-v,
+            & q_{\min}<v<q_{\max},\\
+        q_{\max}, & v\geq q_{\max}.
+    \end{cases}
+    \label{eq:quant-lsq-step-gradient}
+\end{equation}
+The loss gradient is then
+\begin{equation}
+    \frac{\partial\mathcal{L}}{\partial s}
+    =
+    \frac{\partial\mathcal{L}}{\partial\widehat{x}}
+    \frac{\partial\widehat{x}}{\partial s}.
+    \label{eq:quant-lsq-chain-rule}
+\end{equation}
+The learned step size changes the trade-off between clipping-induced
+distortion and rounding-induced error. LSQ additionally scales the
+gradient of the step-size parameter to make its update magnitude
+compatible with updates to the model weights
+\parencite{song2026targetcentricqat}.
+
+\paragraph{Quantization oscillation and optimization stability.}
+The forward quantizer is piecewise constant, so small changes in a
+full-precision parameter can cause its quantized value to jump between
+adjacent levels. For a uniform quantizer with step size \(s\), a
+rounding threshold between levels \(k\) and \(k+1\) is
+\begin{equation}
+    w_{\mathrm{threshold}}
+    =
+    \left(k+\frac{1}{2}\right)s.
+    \label{eq:quant-threshold}
+\end{equation}
+A parameter moving back and forth across this threshold can repeatedly
+change its quantized value even when its continuous updates are small.
+This behavior is called quantization oscillation and can impair
+convergence, particularly at low bit-widths. Oscillation-aware
+optimization, adaptive quantization parameters, staged precision
+changes, and selected weight-freezing strategies are among the
+stabilization directions discussed in
+\textcite{song2026targetcentricqat}.
+
+The optimization sensitivity of parameters also explains why equal
+quantization errors need not produce equal changes in model loss. Let
+\(\mathbf{w}\) be the parameter vector and
+\(\Delta\mathbf{w}\) its quantization perturbation. A second-order
+Taylor approximation gives
+\begin{equation}
+    \mathcal{L}(\mathbf{w}+\Delta\mathbf{w})
+    \approx
+    \mathcal{L}(\mathbf{w})
+    +
+    \nabla\mathcal{L}(\mathbf{w})^{\top}\Delta\mathbf{w}
+    +
+    \frac{1}{2}
+    \Delta\mathbf{w}^{\top}
+    \mathbf{H}
+    \Delta\mathbf{w},
+    \label{eq:quant-loss-taylor}
+\end{equation}
+where \(\mathbf{H}=\nabla^2\mathcal{L}(\mathbf{w})\) is the Hessian.
+Near a stationary point, the gradient term may be small, and the
+quadratic term describes how the curvature of the loss surface weights
+different perturbation directions. This provides a mathematical
+motivation for sensitivity-aware reconstruction and mixed-precision
+allocation. The Hessian expression is a local approximation; it does
+not by itself specify a complete quantization algorithm.
+
+\subsection{Quantization targets and the lifecycle of a language model}
+\label{subsec:quant-targets-lifecycle}
+
+Quantization can be applied at different stages of the language-model
+lifecycle. The target-centric perspective is important because weights,
+activations, gradients, and cached representations have different
+statistical properties, lifetimes, reuse frequencies, and computational
+roles. \textcite{song2026targetcentricqat} organizes QAT around weights,
+activations, joint weight--activation quantization, KV cache, and
+gradients. \textcite{chen2026llmquantization} additionally organizes
+large language model quantization around pretraining, fine-tuning, and
+inference.
+
+\begin{figure}[htbp]
+    \centering
+    \input{figures/quantization_targets}
+    \caption{Principal quantization targets in large language models.
+    Weights and activations participate in the forward computation;
+    gradients and optimizer-related quantities arise during training;
+    and the key-value cache stores representations reused during
+    autoregressive decoding. The categories identify different
+    quantization targets rather than mutually exclusive model stages.}
+    \label{fig:quant-targets}
+\end{figure}
+% Alt text for accessibility register: A central large-language-model
+% computation box connected to five labeled target boxes: weights,
+% activations, joint weights and activations, key-value cache, and
+% gradients. Training and inference roles are indicated for each target.
+
+\paragraph{Weight quantization.}
+Weights are learned parameters and remain relatively stationary during
+inference. They are therefore natural targets for offline quantization.
+If the quantized weight matrix is
+\begin{equation}
+    \widehat{\mathbf{W}}
+    =
+    \mathbf{W}+\Delta\mathbf{W},
+    \label{eq:quant-weight-error-model}
+\end{equation}
+then the error in a linear layer is
+\begin{equation}
+    \Delta\mathbf{y}
+    =
+    \Delta\mathbf{W}\mathbf{x}.
+    \label{eq:quant-weight-error-output}
+\end{equation}
+The effect of weight error depends on the activation vector with which
+the weights are multiplied. Weight-only quantization can reduce model
+storage and memory traffic without requiring the activations to use the
+same low-precision format.
+
+GPTQ and AWQ are representative weight-only PTQ methods discussed by
+\textcite{chen2026llmquantization}. GPTQ uses second-order information
+to guide weight reconstruction, whereas AWQ uses activation information
+to identify salient weight channels and guide scaling. Group-wise
+quantization assigns separate scales to smaller groups of weights,
+allowing local distributions to be represented more closely than with
+a single global scale. At very low bit-widths, selective preservation
+of sensitive weights or channels can reduce the loss of model
+capability \parencite{chen2026llmquantization,song2026targetcentricqat}.
+
+\paragraph{Activation quantization.}
+Activations are generated dynamically from the input data. Their
+distributions can vary across layers, examples, and token positions.
+This makes their quantization ranges more difficult to determine than
+those of fixed inference weights. Outliers are particularly important:
+a small number of large values can increase the scale of a symmetric
+quantizer and reduce the effective resolution available for most
+values. Learnable clipping, per-token or per-channel scales, and
+mixed-precision handling of outliers are strategies for addressing
+this issue. SmoothQuant and RPTQ are representative weight--activation
+quantization methods discussed in the LLM quantization survey
+\parencite{chen2026llmquantization}.
+
+\paragraph{Joint weight--activation quantization.}
+A notation such as W4A4 indicates that both weights and activations
+are represented using four bits. Joint quantization can reduce memory
+traffic and enable low-precision matrix multiplication, but the two
+error sources interact through
+\cref{eq:quant-output-error}. Moreover, quantizing upstream weights
+can change the distributions of downstream activations. Consequently,
+calibration ranges and quantization parameters may need to account for
+the quantized computational graph rather than being selected
+independently for each tensor. Integer-compatible execution also
+requires attention to nonlinear and normalization operations such as
+Softmax, GELU, and LayerNorm. A model with quantized linear layers is
+not necessarily an integer-only model if other operations still require
+floating-point execution \parencite{chen2026llmquantization}.
+
+\paragraph{Key-value cache quantization.}
+Autoregressive language models generate tokens sequentially. During
+self-attention, key and value representations for previously processed
+tokens are retained so that later decoding steps can reuse them.
+Let \(L\) denote the number of Transformer layers, \(B\) the batch
+size, \(T\) the number of cached tokens, \(H_{\mathrm{KV}}\) the
+number of key-value heads, and \(d_h\) the dimension of each head.
+The number of scalar values stored in the key-value cache is
+approximately
+\begin{equation}
+    N_{\mathrm{KV}}
+    =
+    2LBT H_{\mathrm{KV}}d_h,
+    \label{eq:quant-kv-elements}
+\end{equation}
+where the factor of two accounts for keys and values. If each scalar
+uses \(b\) bits, the idealized cache storage is
+\begin{equation}
+    M_{\mathrm{KV}}
+    =
+    \frac{2LBT H_{\mathrm{KV}}d_h b}{8}
+    \ \text{bytes}.
+    \label{eq:quant-kv-memory}
+\end{equation}
+The cache therefore grows linearly with sequence length and batch size.
+Quantization can reduce this memory requirement, but its error has a
+distinctive consequence: cached representations are reused in
+subsequent attention computations, so an approximation can affect
+multiple future decoding steps. Per-token, per-channel, adaptive, and
+non-uniform approaches are discussed as ways of accommodating
+variation in cached key and value distributions
+\parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+\paragraph{Gradient quantization.}
+Gradients determine the updates applied to model parameters. Let
+\(\mathbf{g}_t=\nabla_{\mathbf{w}}\mathcal{L}\) be the full-precision
+gradient and let its quantized approximation be
+\begin{equation}
+    \widehat{\mathbf{g}}_t
+    =
+    \mathbf{g}_t+\boldsymbol{\epsilon}_{g,t}.
+    \label{eq:quant-gradient-error}
+\end{equation}
+A gradient-descent update using the quantized gradient is
+\begin{equation}
+    \mathbf{w}_{t+1}
+    =
+    \mathbf{w}_t
+    -
+    \eta\left(
+        \mathbf{g}_t+\boldsymbol{\epsilon}_{g,t}
+    \right).
+    \label{eq:quant-gradient-update}
+\end{equation}
+The update perturbation is therefore
+\begin{equation}
+    \Delta\mathbf{w}_{t+1}
+    =
+    -\eta\boldsymbol{\epsilon}_{g,t}.
+    \label{eq:quant-gradient-update-error}
+\end{equation}
+Gradient quantization can change both the magnitude and direction of
+the update. Its evaluation should therefore consider gradient norms,
+directional agreement, and the stability of the optimization
+trajectory, rather than tensor reconstruction error alone
+\parencite{song2026targetcentricqat}.
+
+\paragraph{Quantization during pretraining and fine-tuning.}
+During pretraining, low-precision computation can be applied to
+forward activations, weights, gradients, and communication quantities,
+while selected persistent states retain higher precision. FP8 formats
+such as E4M3 and E5M2 allocate bits differently between exponent and
+mantissa: E4M3 provides more mantissa precision over a more restricted
+range, whereas E5M2 provides a larger exponent range. This distinction
+is relevant because weights, activations, and gradients can have
+different magnitude distributions. Dynamic scaling and block-wise
+scaling are used to adapt the numerical range to tensor or block
+statistics. The LLM quantization survey discusses FP8, INT8, INT4,
+and FP4 training directions, as well as mixed-precision training
+systems and low-bit pretraining
+\parencite{chen2026llmquantization}.
+
+Fine-tuning quantization includes PTQ and QAT. PTQ applies a low-bit
+representation to an existing pretrained model, while QAT simulates
+quantization during fine-tuning so that the model can adapt to the
+deployment representation. QAT can be combined with distillation or
+parameter-efficient adaptation. LLM-QAT, QA-LoRA, LoftQ, and QEFT
+are examples of approaches discussed in the supplied surveys. Their
+detailed relationship to parameter-efficient fine-tuning is developed
+in the subsequent PEFT section; here, their relevance is that
+quantization can be integrated with adaptation rather than treated
+only as a final compression step
+\parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+\subsection{Numerical formats, mixed precision, and hardware efficiency}
+\label{subsec:quant-formats-hardware}
+
+Integer and floating-point formats distribute their representational
+capacity differently. Integer quantization uses a discrete range with
+a fixed step size over the selected interval. Floating-point formats
+represent values through sign, exponent, and mantissa fields, so the
+spacing between representable values varies with magnitude. FP8 and
+FP4 formats are therefore not interchangeable with INT8 and INT4
+merely because their nominal bit-widths are equal. The suitable format
+depends on the dynamic range and precision requirements of the target
+tensor and on the arithmetic supported by the hardware
+\parencite{chen2026llmquantization}.
+
+Non-uniform quantization uses unequally spaced representational levels.
+It can allocate more levels to regions where values are concentrated
+or where approximation is more important. NF4 is an example discussed
+in the LLM quantization survey for representing weights whose
+distribution is approximately normal. Such a representation may
+reduce distortion for the intended distribution, although its
+implementation and hardware support must also be considered
+\parencite{chen2026llmquantization}.
+
+Mixed-precision quantization assigns different bit-widths to different
+model components. Suppose a model is divided into \(K\) parameter
+groups, where group \(k\) contains \(N_k\) parameters and uses \(b_k\)
+bits per parameter. Ignoring metadata, the total storage is
+\begin{equation}
+    M
+    =
+    \frac{1}{8}
+    \sum_{k=1}^{K}N_kb_k.
+    \label{eq:quant-mixed-precision-memory}
+\end{equation}
+A simplified precision-allocation problem can be written as
+\begin{equation}
+    \begin{aligned}
+        \min_{\{b_k\}}\quad&
+        \mathcal{L}_{\mathrm{quantized}}(\{b_k\})\\
+        \text{subject to}\quad&
+        \sum_{k=1}^{K}N_kb_k\leq B,
+    \end{aligned}
+    \label{eq:quant-bit-allocation}
+\end{equation}
+where \(B\) is a bit budget. This formulation expresses the objective
+of minimizing quantization-induced task degradation under a storage
+constraint. In practice, the loss as a function of bit allocation is
+not generally known in closed form. Sensitivity estimates, local
+reconstruction error, activation statistics, and hardware constraints
+are therefore used to guide allocation
+\parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+The practical benefit of quantization depends on whether a workload is
+limited by data movement or arithmetic throughput. A memory-bound
+workload is constrained primarily by moving weights or activations
+between memory and compute units. A compute-bound workload is
+constrained primarily by the rate of arithmetic operations. Weight-only
+quantization can reduce the amount of weight data transferred, whereas
+joint weight--activation quantization can additionally exploit
+low-precision arithmetic units when suitable kernels are available.
+A reduction in bit-width does not, by itself, guarantee a proportional
+reduction in latency: dequantization, memory access patterns, kernel
+availability, operator fallbacks, and hardware architecture all affect
+the realized result \parencite{chen2026llmquantization}.
+
+Accumulator precision is another constraint. In an integer matrix
+multiplication, an output element is an accumulated sum:
+\begin{equation}
+    y_{ij}
+    =
+    \sum_{k=1}^{n}w_{ik}x_{kj}.
+    \label{eq:quant-integer-accumulation}
+\end{equation}
+Even if the operands use low-bit integers, the sum can require a
+wider representation. For example, if symmetric INT4 operands lie
+between \(-7\) and \(7\), the maximum magnitude of one product is
+\(49\). An accumulation of \(4096\) such maximum positive products
+would be
+\begin{equation}
+    4096\times49=200{,}704.
+    \label{eq:quant-accumulator-example}
+\end{equation}
+This value exceeds the maximum positive value of a signed 18-bit
+integer, \(2^{17}-1=131{,}071\), but is within the maximum positive
+value of a signed 19-bit integer, \(2^{18}-1=262{,}143\). This
+worst-case calculation illustrates why operand precision and
+accumulator precision must be considered separately. Actual
+implementations choose accumulator formats according to their
+supported arithmetic and overflow constraints
+\parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+Hardware--algorithm co-design is consequently part of quantization.
+A low-bit representation must be supported by kernels that efficiently
+load data, apply scales, perform arithmetic, accumulate products, and
+write outputs. A weight-only kernel may reduce memory traffic but still
+incur dequantization overhead. A weight--activation quantized model
+may require low-precision matrix multiplication and compatible
+implementations of nonlinear and normalization operations. Hand-tuned
+kernels, compiler-based generation, and mixed-precision execution
+therefore influence whether a theoretical compression benefit becomes
+a practical speed or energy benefit
+\parencite{chen2026llmquantization}.
+
+\subsection{Evaluation, limitations, and connection to the next topic}
+\label{subsec:quant-evaluation-transition}
+
+The evaluation of a quantized model must distinguish numerical
+reconstruction, preservation of model behavior, and deployment
+efficiency. A common tensor-level measure is normalized mean squared
+error. For an original tensor \(\mathbf{X}\) and its quantized
+reconstruction \(Q(\mathbf{X})\), it is
+\begin{equation}
+    \operatorname{nMSE}(\mathbf{X})
+    =
+    \frac{
+        \|\mathbf{X}-Q(\mathbf{X})\|_F^2
+    }{
+        \|\mathbf{X}\|_F^2
+    },
+    \label{eq:quant-nmse}
+\end{equation}
+where \(\|\cdot\|_F\) is the Frobenius norm. For a matrix
+\(\mathbf{A}\),
+\begin{equation}
+    \|\mathbf{A}\|_F
+    =
+    \sqrt{\sum_{i,j}a_{ij}^2}.
+    \label{eq:quant-frobenius}
+\end{equation}
+A smaller nMSE indicates a closer tensor reconstruction. It should be
+complemented by cosine similarity, clipping and saturation ratios,
+and layer-wise error profiles because a single aggregate error can
+conceal distortion concentrated in a small number of sensitive
+modules \parencite{song2026targetcentricqat}.
+
+For Transformer models, local tensor error should be paired with
+measurements of block-output drift, hidden-state similarity, and
+divergence between the output distributions of the full-precision
+and quantized models. One distributional measure is the
+Kullback--Leibler divergence:
+\begin{equation}
+    D_{\mathrm{KL}}(P\|Q)
+    =
+    \sum_i P(i)\log\frac{P(i)}{Q(i)},
+    \label{eq:quant-kl}
+\end{equation}
+where \(P\) and \(Q\) are probability distributions. In this setting,
+they can represent the token distributions produced by the original
+and quantized models on the same input. Cross-entropy and perplexity
+also measure the effect of quantization on language modeling. For a
+sequence of \(T\) tokens, the average negative log-likelihood is
+\begin{equation}
+    \mathcal{L}_{\mathrm{NLL}}
+    =
+    -\frac{1}{T}
+    \sum_{t=1}^{T}
+    \log P(x_t\mid x_{<t}),
+    \label{eq:quant-nll}
+\end{equation}
+and perplexity is
+\begin{equation}
+    \operatorname{PPL}
+    =
+    \exp(\mathcal{L}_{\mathrm{NLL}}).
+    \label{eq:quant-perplexity}
+\end{equation}
+Perplexity is useful for language modeling but does not, by itself,
+establish that reasoning, mathematical problem solving, instruction
+following, or code generation capabilities have been preserved.
+
+The QAT survey reports that LLM evaluation uses language-modeling
+datasets and task benchmarks that include WikiText-2, C4, MMLU,
+ARC, GSM8K, MATH or BBH, and HumanEval. These evaluate different
+aspects of model behavior, and results should be compared only with
+care because the evaluated backbones, training budgets, prompts,
+decoding settings, and benchmark protocols can differ. The survey
+also notes that reasoning and code-generation evaluation is less
+consistently reported than conventional language-modeling and
+zero-shot evaluation in the methods it reviews
+\parencite{song2026targetcentricqat}.
+
+Deployment evaluation must report the actual memory footprint,
+latency, throughput, and hardware conditions. Prefill and autoregressive
+decoding should be distinguished because their computational and
+memory behavior differs. The nominal bit-width is not a substitute
+for measured efficiency: two models with the same weight bit-width
+may use different activation formats, group sizes, accumulators,
+kernels, or floating-point fallbacks. QAT-specific stability
+diagnostics can additionally include gradient cosine similarity,
+gradient sign agreement, gradient-norm drift, and the fraction of
+weights whose quantized values repeatedly change across adjacent
+updates \parencite{song2026targetcentricqat,chen2026llmquantization}.
+
+Quantization nevertheless involves unavoidable trade-offs. Lower
+bit-widths reduce storage and can enable more efficient computation,
+but they reduce representational capacity and can increase rounding,
+clipping, and propagation errors. Fine-grained scales can improve
+local approximation at the cost of metadata and implementation
+overhead. QAT can recover performance by adapting a model to
+quantization constraints, but its surrogate gradients are approximate
+and its optimization can be unstable. Hardware support determines
+whether the numerical savings translate into real latency, throughput,
+or energy improvements.
+
+The central result is that quantization is not a single compression
+operation. It is a design problem involving numerical representation,
+statistical distributions, optimization dynamics, model components,
+and hardware execution. PTQ and QAT provide different ways of
+introducing low-precision representations; target-specific methods
+address the distinct behavior of weights, activations, gradients,
+and KV-cache entries; and mixed-precision allocation balances
+accuracy against a resource budget.
+
+This discussion also establishes a connection to the next optimization
+topic. Quantization changes how numerical information is represented,
+whereas knowledge distillation transfers predictive information from
+a teacher model to a student model. The two can be combined, as the
+QAT literature illustrates, but they solve different parts of the
+problem. The next section therefore develops distillation as a
+complementary mechanism for transferring model behavior under
+computational and representational constraints.

@@ -1,0 +1,32 @@
+% Figure source fragment: taxonomy of efficient attention mechanisms.
+% This file is inserted inside a figure environment using \input.
+\begin{center}
+\setlength{\fboxsep}{5pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{cc}
+    \fbox{\parbox[t][1.8cm][t]{0.43\textwidth}{\centering
+        \textbf{Hardware-efficient attention}\\[0.2em]
+        \scriptsize Same attention function; reduce data movement and
+        improve kernel execution.\\
+        Example: FlashAttention-2.}} &
+    \fbox{\parbox[t][1.8cm][t]{0.43\textwidth}{\centering
+        \textbf{Compact attention}\\[0.2em]
+        \scriptsize Reduce stored key--value state through sharing or
+        compression.\\
+        Examples: MQA and GQA.}}\\[0.35em]
+    \fbox{\parbox[t][1.8cm][t]{0.43\textwidth}{\centering
+        \textbf{Sparse attention}\\[0.2em]
+        \scriptsize Select a subset of token or block interactions.\\
+        Examples: local, block-sparse, and retrieval-based attention.}} &
+    \fbox{\parbox[t][1.8cm][t]{0.43\textwidth}{\centering
+        \textbf{Linear attention}\\[0.2em]
+        \scriptsize Reformulate similarity computation or use recurrent
+        state updates.\\
+        Examples: kernelized and gated linear attention.}}
+\end{tabular}
+
+\par\smallskip
+\footnotesize
+Hybrid architectures combine multiple mechanisms across layers or components.
+\normalsize
+\end{center}

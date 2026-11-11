@@ -1,0 +1,59 @@
+% ============================================================================
+% figures/shampoo_soap_geometry.tex
+% Included from the section body inside a figure environment.
+% Uses standard LaTeX boxes and tabular environments; no TikZ dependency.
+% ============================================================================
+\begin{center}
+\renewcommand{\arraystretch}{1.2}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{c}
+\fbox{\parbox{0.74\linewidth}{
+    \centering
+    \textbf{Matrix gradient}
+    $\mathbf{G}_t\in\mathbb{R}^{m\times n}$
+}}\\[0.45em]
+$\swarrow\hspace{3.2cm}\searrow$\\[0.35em]
+\begin{tabular}{ccc}
+\fbox{\parbox{0.30\linewidth}{
+    \centering
+    \textbf{Left covariance}\\
+    $\mathbf{L}_t
+    \leftarrow
+    \mathbf{L}_{t-1}+\mathbf{G}_t\mathbf{G}_t^{\mathsf T}$
+}}
+&
+\hspace{0.8cm}
+&
+\fbox{\parbox{0.30\linewidth}{
+    \centering
+    \textbf{Right covariance}\\
+    $\mathbf{R}_t
+    \leftarrow
+    \mathbf{R}_{t-1}+\mathbf{G}_t^{\mathsf T}\mathbf{G}_t$
+}}
+\end{tabular}\\[0.45em]
+$\Downarrow$\\[0.35em]
+\begin{tabular}{cc}
+\fbox{\parbox{0.40\linewidth}{
+    \centering
+    \textbf{Shampoo}\\[0.2em]
+    $\mathbf{L}_t^{-1/4}
+    \mathbf{G}_t
+    \mathbf{R}_t^{-1/4}$\\[0.2em]
+    Direct left--right matrix preconditioning
+}}
+&
+\fbox{\parbox{0.40\linewidth}{
+    \centering
+    \textbf{SOAP}\\[0.2em]
+    $\mathbf{G}'_t
+    =
+    \mathbf{Q}_L^{\mathsf T}
+    \mathbf{G}_t
+    \mathbf{Q}_R$\\[0.2em]
+    Adam-style update in the rotated basis,
+    followed by inverse rotation
+}}
+\end{tabular}
+\end{tabular}
+\end{center}

@@ -1,0 +1,12 @@
+% Native LaTeX picture: autoregressive token generation as an MDP trajectory.
+\setlength{\unitlength}{1mm}
+\begin{picture}(170,48)
+    \put(1,20){\framebox(39,17){\shortstack{State\\prefix $s_t=(x_1,\ldots,x_t)$}}}
+    \put(47,20){\framebox(34,17){\shortstack{Action\\next token $a_t$}}}
+    \put(88,20){\framebox(39,17){\shortstack{Transition\\append $a_t$}}}
+    \put(134,20){\framebox(35,17){\shortstack{Reward\\token or sequence}}}
+    \put(40,28){\vector(1,0){7}}
+    \put(81,28){\vector(1,0){7}}
+    \put(127,28){\vector(1,0){7}}
+    \put(43,11){\makebox(85,5){$s_{t+1}=s_t\mathbin{\Vert}a_t$}}
+\end{picture}
